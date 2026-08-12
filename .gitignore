@@ -1,0 +1,22 @@
+.env
+.env.*
+!.env.example
+data/
+!data/.gitkeep
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+node_modules/
+web/.next/
+web/out/
+.DS_Store
+artifacts/
+*.ckpt
+*.pt
+.vercel
+
+# playwright browsers / scratch
+web/test-results/

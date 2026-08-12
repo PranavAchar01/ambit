@@ -1,0 +1,26 @@
+{
+  "name": "gridsight-web",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "dev": "next dev -p 3000",
+    "build": "next build",
+    "start": "next start -p 3000",
+    "lint": "next lint",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "next": "15.5.4",
+    "react": "19.1.1",
+    "react-dom": "19.1.1"
+  },
+  "devDependencies": {
+    "@tailwindcss/postcss": "4.1.14",
+    "@types/node": "24.7.0",
+    "@types/react": "19.1.9",
+    "@types/react-dom": "19.1.7",
+    "playwright": "^1.62.1",
+    "tailwindcss": "4.1.14",
+    "typescript": "5.9.3"
+  }
+}
