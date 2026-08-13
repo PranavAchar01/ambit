@@ -17,6 +17,43 @@ The name is the thesis: an *ambit* is the bounds of what something covers.
 
 ---
 
+## What was built during the event
+
+Ambit is not a from-scratch project. The registry, the router, the coverage gates, the agent, the
+API and the UI pre-date this event, and the table below says so line by line. Everything marked
+**Built during event** is new work; everything marked **Pre-existing** was already running when the
+event started, at commit `6903de1`.
+
+| Component | Status |
+|---|---|
+| Vector-routed model registry on Atlas (`$vectorSearch` over per-model CLIP centroids) | Pre-existing |
+| Per-model coverage gates and the abstention rule | Pre-existing |
+| LangGraph agent, checkpointed to MongoDB, resumable by `thread_id` | Pre-existing |
+| Few-shot cold-start from ~8 references | Pre-existing |
+| PatchCore weights in GridFS; exact round-trip verification | Pre-existing |
+| Episodic recall (`finding_recall_idx`, `POST /recall`) | Pre-existing |
+| Registry animation / routing map driven by live SSE | Pre-existing |
+| Voice agent over OpenAI Realtime, MongoDB-backed tools | Pre-existing |
+| Electronics rescope: VisA PCB classes + MVTec transistor/cable, licences recorded | Pre-existing |
+| Phone-camera capture: WebSocket relay, viewfinder, hold-still detection | Pre-existing |
+| FastAPI endpoints, Next.js UI, two-colour design system | Pre-existing |
+| **`arduino_uno` class from original photography** — local-directory ingest adapter, provenance with the split recorded by filename, held-out validation harness | **Built during event** |
+| **Normal-only training path** — a class with no labelled defect set trains, and records `null` for both AUROCs instead of a fabricated `0.0` | **Built during event** |
+| **Out-of-sample image-threshold calibration** — the threshold was an in-sample maximum; measured, every unseen normal frame exceeded it | **Built during event** |
+| **Fireworks vision-language defect narration** behind a provider seam (Fireworks / local / null), with the crop pair, the sentinel and the degradation policy | **Built during event** |
+| **`LLM_PROVIDER` switch** routing text-LLM calls through OpenAI or OpenRouter, with a deterministic refuse when neither key is present | **Built during event** |
+| **Provider reporting** at `GET /health` and on startup | **Built during event** |
+| **Main screen restructured** into capture / analysis columns; agent steps as discrete rows with per-step latency; verdict card rendering score-vs-gate as a comparison | **Built during event** |
+| **Manual shutter and stability-detection toggle** on the phone capture page | **Built during event** |
+| **Backfilled-timestamp disclosure** surfaced in `/trends` | **Built during event** |
+| ElevenLabs spoken findings | **Not built** — see *Not done* |
+| Projects / tenant grouping, registry and trends redesign | **Not built** — see *Not done* |
+
+Nothing in the "Pre-existing" rows was re-presented as new, and nothing in the "Built during event"
+rows existed before it. The git history is the audit trail: every event commit is after `6903de1`.
+
+---
+
 ## The result that matters
 
 Five specialists are registered. A sixth board, `visa_pcb4`, is deliberately withheld — the registry
@@ -142,14 +179,32 @@ inadmissible.
 | `mvtec_transistor` | MVTec AD | CC BY-NC-SA 4.0 | 0.9967 | 0.9456 | 0.9692 |
 | `mvtec_cable` | MVTec AD | CC BY-NC-SA 4.0 | 0.9933 | 0.9892 | 0.9629 |
 | `visa_pcb4` | VisA | CC BY 4.0 | — **withheld** — | — | — |
+| `arduino_uno` | **original photography** | **unrestricted** | **—** | **—** | 0.9806 |
 
 Licence is a positioning constraint, not an appendix, and the registry UI states it per model:
 
 - **VisA (`pcb1`–`pcb4`) is CC BY 4.0** — attribution only. The PCB classes carry the commercial story.
 - **MVTec AD (`transistor`, `cable`) is CC BY-NC-SA 4.0** — non-commercial, and ShareAlike
   propagates. Demo, research and internal evaluation only; never in a shipped product.
+- **`arduino_uno` is ours.** The frames were shot by the authors on a bench rig, so the specialist
+  derived from them carries no upstream condition at all — neither VisA's attribution term nor
+  MVTec's NonCommercial one.
 
-Pixel AUROC is real for every class, because both corpora ship per-defect ground-truth masks.
+Pixel AUROC is real for every corpus class, because both corpora ship per-defect ground-truth masks.
+
+### Why `arduino_uno` has no AUROC, and why that is the correct value
+
+Both metrics are `null`, the UI renders a dash, and the tooltip reads *"no labelled defect set —
+normal-only training"*. That is not a gap in the ingest. **A prototype shop has no defect set**:
+there is no library of known-bad Rev A boards to measure against, and there never will be, because
+the whole point of the revision is that it is new. Ten known-good frames is the honest input.
+
+The alternative was worse than useless. With a single label present, torchmetrics computes a binary
+AUROC of `0.0`, warns, and returns — so the unguarded path writes a **fabricated** `0.0` into the
+registry, where the UI renders it as a real measurement of a real model. `null` is the true value.
+
+This is also the ICP argument in one row of a table: every other class in this registry needed
+somebody else's labelled corpus, and this one needed a phone.
 
 ---
 
@@ -188,7 +243,24 @@ usually come back `unroutable`. **That is the coverage gate working**, and cold-
 uv venv --python 3.12 && uv sync --all-groups
 ```
 
-`.env` is git-ignored and must contain `MONGODB_URI`, `MONGODB_DB`, `OPENAI_API_KEY`, and `HF_TOKEN`.
+`.env` is git-ignored. See `.env.example` for the full list. `MONGODB_URI` is the only one that is
+strictly required — Atlas is not optional, because `$vectorSearch` is Atlas-only. Everything else
+selects a capability and degrades visibly when absent:
+
+| variable | absent means |
+|---|---|
+| `MONGODB_URI` | **fatal.** `get_settings()` raises at import |
+| `MONGODB_DB` | defaults to `gridsight` |
+| `HF_TOKEN` | corpus ingest from the Hub is unauthenticated |
+| `OPENAI_API_KEY` | ambiguous-band adjudication refuses deterministically; the voice agent is unavailable |
+| `FIREWORKS_API_KEY` | no vision description; narration falls back to the structured sentence and records `narrative_source: "structured"` |
+| `OPENROUTER_API_KEY` | only consulted when `LLM_PROVIDER=openrouter` or no OpenAI key is set |
+| `LLM_PROVIDER` | `openai` when its key is present, else `openrouter`, else the deterministic refuse |
+| `VLM_PROVIDER` | Fireworks if its key is present, else a locally cached vision model, else none |
+| `VLM_MODEL` / `VLM_TIMEOUT_S` | the measured primary, and an 8 s budget |
+
+`GET /health` reports which of these actually resolved, so a deployment that is quietly running
+without a provider is visible rather than plausible.
 
 ```bash
 uv run python scripts/ingest_visa.py      # VisA pcb1-pcb4 (CC BY 4.0)
@@ -264,6 +336,50 @@ which is reconstructed by name at load time. That keeps a model ~7 MB instead of
 
 ---
 
+## The model providers, and what each one is for
+
+Three seams, three different jobs. Each is chosen by key presence and reported at `GET /health`, so
+a degraded provider is visible rather than silent — the same reasoning that makes the brute-force
+vector-search fallback log at ERROR on every call.
+
+**Fireworks — describing the defect.** PatchCore localises and scores; it has no language, so it
+cannot say *what* is wrong. A defect frame is cropped to its highest-scoring region, the golden
+reference is cropped to the *same* region, and both go to a vision model on Fireworks with one
+question: what physically differs? The answer is specific — *"the silver rectangular component near
+the top of the board appears slightly shifted or rotated … the solder joints on the pins at the
+bottom edge look less uniform"* — where the numbers alone could only ever say `53.41 > 39.08`.
+
+Cropping is load-bearing. A VLM given a whole board narrates the whole board and volunteers a defect
+somewhere; given a region an anomaly detector has already localised, it describes what is there.
+
+Verdict-critical work never touches the network: OpenCLIP embedding, `$vectorSearch` and PatchCore
+inference are local or Atlas. The description is an outer layer with a hard timeout and a structured
+fallback, and it is never called at all on a refusal — there is no reference to compare against, and
+describing an unrecognised part is exactly the confabulation abstention exists to prevent.
+
+**OpenRouter — adjudicating the ambiguous band.** A frame scoring within 0.04 below a model's gate is
+not decided by the vector score alone; a structured-output call breaks the tie. `LLM_PROVIDER`
+switches that call, and the model-naming call, between OpenAI and OpenRouter — a base URL and a model
+string, with OpenRouter's `models` failover in the request body so one provider outage does not end a
+demo. With **neither** key present the band resolves by the deterministic rule: **refuse**. That is
+the correct default for a system whose whole claim is that it declines when it does not know, and it
+means the demo runs on zero credentials.
+
+**ElevenLabs — speaking the finding.** Not built; see *Not done*.
+
+### Narration is written once and stored, not re-inferred
+
+The description is produced at inspection time and persisted onto the finding — `agent_narrative`,
+`narrative_source`, `vlm_component`, `vlm_difference_visible`, `vlm_latency_ms`. **The voice agent
+reads it out of MongoDB and never calls the vision model itself.**
+
+That is the persistent-context property, concretely: the expensive act of looking happens once, and
+every later question — asked minutes later, from another process, by voice — is answered from a
+stored fact rather than from a fresh inference that might say something slightly different. A system
+that re-infers on every question does not have a memory; it has a habit.
+
+---
+
 ## Honest limits
 
 - **6 of 125 in-registry frames are refused.** The gate buys 25/25 abstention at that cost. Stated
@@ -272,11 +388,43 @@ which is reconstructed by name at load time. That keeps a model ~7 MB instead of
   real board under bench lighting will usually be refused — correct behaviour, but it means the
   live-capture demo needs a cold-start first.
 - **A cold-started model's threshold comes from ~8 references**, so its normal envelope is tight and
-  it flags aggressively until retrained on a fuller set.
+  it flags aggressively until retrained on a fuller set. It is at least now calibrated on frames the
+  memory bank was *not* fitted on: measured leave-one-out on a 10-frame capture, **all ten** genuinely
+  normal frames scored above the old in-sample threshold once withheld (24.5–35.5 against 23.3). The
+  correction costs two extra fits, which moved cold-start from ~3.3 s to ~9 s.
+- **`arduino_uno`'s specialist is fitted on ten frames from one session** under one lighting
+  condition, and its coverage gate is calibrated from a centroid fitted on two of them (the
+  fit/holdout split floors at 8 held out). Routing survives it — 4/4 held-out frames route at
+  0.9888–0.9961 against a gate of 0.9806 — but this is a thin class and it is stated as one.
+- **No defect has ever been run through `arduino_uno`.** Its threshold bounds the normal side only;
+  the other side of that boundary is unmeasured until a real bad board exists.
+- **The vision description is not verified against ground truth.** It is a model's account of what
+  differs between two crops. It is recorded with its provider and latency so it can be audited, but
+  no claim is made that it is correct — only that it looked.
 - **Decisions inside the 0.04 ambiguous band are not deterministic**, because an LLM adjudicates
   them. The same frame at slightly different compression can land on either side.
 - **`gridsight/ingest/hf_scrape.py` is dead code** for a purged powerline corpus, kept only for its
   provenance-logging pattern. It is not on any live path.
+
+---
+
+## Not done
+
+Stated plainly rather than left for a reader to notice:
+
+- **ElevenLabs spoken findings.** Not built. No `ELEVENLABS_API_KEY` was available and the work was
+  cut for time. The existing OpenAI Realtime voice agent is untouched and still works.
+- **Projects / tenant grouping.** The registry is still a flat list of classes rather than being
+  grouped under an owning project.
+- **`/registry` and `/trends` redesign.** Both still render their original layout. The backfill
+  disclosure was added to `/trends`; the chart restructure was not.
+- **`/voice` is still a route**, not the floating widget on the main screen.
+- **Cold-start latency regressed** from ~3.3 s to ~9 s, as the price of calibrating the image
+  threshold out of sample. The fix is to cache backbone features across calibration folds, measured
+  at roughly a 30% saving and not attempted.
+- **The vision path is exercised only against Fireworks.** The local provider is implemented and
+  selected when weights are cached, but no local vision model has been downloaded on this machine,
+  so that branch resolves to null here and is unexercised.
 
 ---
 
