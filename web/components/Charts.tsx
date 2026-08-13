@@ -3,25 +3,29 @@
 import type { ClassTrend, TrendPoint } from "@/lib/types";
 
 /**
- * Charts are hand-rolled SVG driven entirely by CSS custom properties, so they
- * re-colour with the theme instead of baking in a palette that only reads in one.
+ * Charts are hand-rolled SVG in the two colours the system allows: black and
+ * red, with white and grey standing in as the absence of red. Series are
+ * separated by luminance rather than by hue, so nothing here reads as a
+ * decorative palette — red only ever marks something that wants attention.
  */
 
-const SERIES_COLOURS = ["#4f8cff", "#f59e0b", "#22c55e", "#e879f9", "#f87171", "#2dd4bf"];
+const SERIES_COLOURS = ["#ff2d2d", "#ffffff", "#c11414", "#9a9a9a", "#ff8a8a", "#6e6e6e"];
 
 export function seriesColour(index: number): string {
-  return SERIES_COLOURS[index % SERIES_COLOURS.length] ?? "#4f8cff";
+  return SERIES_COLOURS[index % SERIES_COLOURS.length] ?? "#ff2d2d";
+}
+
+/** Severity reads as intensity: grey at the low end, red at the high end. */
+const SEVERITY_RAMP = ["#5f5f5f", "#9a9a9a", "#c11414", "#ff2d2d"];
+
+function severityColour(index: number, total: number): string {
+  const t = total <= 1 ? 1 : index / (total - 1);
+  const step = Math.round(t * (SEVERITY_RAMP.length - 1));
+  return SEVERITY_RAMP[step] ?? "#ff2d2d";
 }
 
 function EmptyState({ label }: { label: string }) {
-  return (
-    <div
-      className="flex min-h-40 items-center justify-center rounded-md p-6 text-center text-sm"
-      style={{ background: "var(--surface-2)", color: "var(--text-muted)" }}
-    >
-      {label}
-    </div>
-  );
+  return <div className="empty">{label}</div>;
 }
 
 export function DefectRateChart({ points }: { points: TrendPoint[] }) {
@@ -45,10 +49,10 @@ export function DefectRateChart({ points }: { points: TrendPoint[] }) {
   const y = (rate: number) => pad.top + (1 - rate) * plotH;
 
   return (
-    <div className="overflow-x-auto">
+    <div className="table-wrap">
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="h-auto w-full min-w-[34rem]"
+        style={{ width: "100%", minWidth: "34rem", height: "auto" }}
         role="img"
         aria-label="Defect rate over time by asset class"
       >
@@ -59,10 +63,17 @@ export function DefectRateChart({ points }: { points: TrendPoint[] }) {
               x2={W - pad.right}
               y1={y(t)}
               y2={y(t)}
-              stroke="var(--grid)"
+              stroke="var(--line)"
               strokeWidth={1}
             />
-            <text x={pad.left - 8} y={y(t) + 4} textAnchor="end" fontSize={11} fill="var(--text-muted)">
+            <text
+              x={pad.left - 8}
+              y={y(t) + 4}
+              textAnchor="end"
+              fontSize={11}
+              fill="var(--fg-faint)"
+              fontFamily="var(--mono)"
+            >
               {(t * 100).toFixed(0)}%
             </text>
           </g>
@@ -75,7 +86,8 @@ export function DefectRateChart({ points }: { points: TrendPoint[] }) {
               y={H - 12}
               textAnchor="middle"
               fontSize={11}
-              fill="var(--text-muted)"
+              fill="var(--fg-faint)"
+              fontFamily="var(--mono)"
             >
               {d.slice(5)}
             </text>
@@ -107,13 +119,17 @@ export function DefectRateChart({ points }: { points: TrendPoint[] }) {
           );
         })}
       </svg>
-      <ul className="m-0 mt-2 flex list-none flex-wrap gap-x-4 gap-y-1 p-0 text-xs">
+      <ul className="row tiny" style={{ marginTop: "var(--step)" }}>
         {classes.map((cls, ci) => (
-          <li key={cls} className="flex items-center gap-1.5">
+          <li key={cls} style={{ display: "flex", alignItems: "center", gap: "6px" }}>
             <span
               aria-hidden
-              className="inline-block h-2.5 w-2.5 rounded-sm"
-              style={{ background: seriesColour(ci) }}
+              style={{
+                display: "inline-block",
+                width: "10px",
+                height: "10px",
+                background: seriesColour(ci),
+              }}
             />
             {cls}
           </li>
@@ -134,10 +150,10 @@ export function SeverityHistogram({ data }: { data: { bucket: string; count: num
   const barW = plotW / data.length - 10;
 
   return (
-    <div className="overflow-x-auto">
+    <div className="table-wrap">
       <svg
         viewBox={`0 0 ${W} ${H}`}
-        className="h-auto w-full min-w-[22rem]"
+        style={{ width: "100%", minWidth: "22rem", height: "auto" }}
         role="img"
         aria-label="Distribution of defect severity"
       >
@@ -146,7 +162,7 @@ export function SeverityHistogram({ data }: { data: { bucket: string; count: num
           x2={W - pad.right}
           y1={pad.top + plotH}
           y2={pad.top + plotH}
-          stroke="var(--grid)"
+          stroke="var(--line-bright)"
         />
         {data.map((d, i) => {
           const h = (d.count / max) * plotH;
@@ -158,8 +174,7 @@ export function SeverityHistogram({ data }: { data: { bucket: string; count: num
                 y={pad.top + plotH - h}
                 width={barW}
                 height={Math.max(h, 1)}
-                rx={3}
-                fill={seriesColour(i)}
+                fill={severityColour(i, data.length)}
               >
                 <title>{`${d.bucket}: ${d.count}`}</title>
               </rect>
@@ -168,7 +183,8 @@ export function SeverityHistogram({ data }: { data: { bucket: string; count: num
                 y={pad.top + plotH - h - 5}
                 textAnchor="middle"
                 fontSize={11}
-                fill="var(--text)"
+                fill="var(--fg)"
+                fontFamily="var(--mono)"
               >
                 {d.count}
               </text>
@@ -177,7 +193,8 @@ export function SeverityHistogram({ data }: { data: { bucket: string; count: num
                 y={H - 12}
                 textAnchor="middle"
                 fontSize={10}
-                fill="var(--text-muted)"
+                fill="var(--fg-faint)"
+                fontFamily="var(--mono)"
               >
                 {d.bucket}
               </text>
@@ -192,34 +209,33 @@ export function SeverityHistogram({ data }: { data: { bucket: string; count: num
 export function FailingTable({ rows }: { rows: ClassTrend[] }) {
   if (rows.length === 0) return <EmptyState label="No findings recorded yet." />;
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[34rem] border-collapse text-sm">
+    <div className="table-wrap">
+      <table style={{ minWidth: "34rem" }}>
         <caption className="sr-only">Components ranked by how fast their defect rate is rising</caption>
         <thead>
-          <tr className="muted text-left text-xs uppercase tracking-wide">
-            <th scope="col" className="py-1.5 pr-3 font-medium">Asset class</th>
-            <th scope="col" className="py-1.5 pr-3 text-right font-medium">Inspections</th>
-            <th scope="col" className="py-1.5 pr-3 text-right font-medium">Defects</th>
-            <th scope="col" className="py-1.5 pr-3 text-right font-medium">Defect rate</th>
-            <th scope="col" className="py-1.5 pr-3 text-right font-medium">Recent</th>
-            <th scope="col" className="py-1.5 text-right font-medium">Trend</th>
+          <tr>
+            <th scope="col">Asset class</th>
+            <th scope="col" className="num">Inspections</th>
+            <th scope="col" className="num">Defects</th>
+            <th scope="col" className="num">Defect rate</th>
+            <th scope="col" className="num">Recent</th>
+            <th scope="col" className="num">Trend</th>
           </tr>
         </thead>
         <tbody>
           {rows.map((r) => {
             const accel = r.acceleration ?? 0;
+            // A rising defect rate is the only thing here worth alarming about.
             const colour =
-              accel > 0.01 ? "var(--danger)" : accel < -0.01 ? "var(--ok)" : "var(--text-muted)";
+              accel > 0.01 ? "var(--red)" : accel < -0.01 ? "var(--fg-dim)" : "var(--fg-faint)";
             return (
-              <tr key={r.asset_class} style={{ borderTop: "1px solid var(--border)" }}>
-                <td className="mono py-1.5 pr-3">{r.asset_class}</td>
-                <td className="mono py-1.5 pr-3 text-right">{r.inspections}</td>
-                <td className="mono py-1.5 pr-3 text-right">{r.defects}</td>
-                <td className="mono py-1.5 pr-3 text-right">{(r.defect_rate * 100).toFixed(0)}%</td>
-                <td className="mono py-1.5 pr-3 text-right">
-                  {(r.recent_defect_rate * 100).toFixed(0)}%
-                </td>
-                <td className="mono py-1.5 text-right" style={{ color: colour }}>
+              <tr key={r.asset_class}>
+                <td className="mono">{r.asset_class}</td>
+                <td className="mono num">{r.inspections}</td>
+                <td className="mono num">{r.defects}</td>
+                <td className="mono num">{(r.defect_rate * 100).toFixed(0)}%</td>
+                <td className="mono num">{(r.recent_defect_rate * 100).toFixed(0)}%</td>
+                <td className="mono num" style={{ color: colour }}>
                   {accel > 0 ? "▲" : accel < 0 ? "▼" : "—"} {(Math.abs(accel) * 100).toFixed(0)}pp
                 </td>
               </tr>

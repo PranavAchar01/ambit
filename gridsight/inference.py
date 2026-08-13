@@ -186,13 +186,21 @@ def extract_regions(
 
 
 #: Below this normalised value the heatmap is fully transparent, so the frame
-#: underneath stays readable instead of being buried under a wash of blue.
+#: underneath stays readable instead of being buried under a wash of colour.
 HEATMAP_FLOOR = 0.5
 HEATMAP_MAX_ALPHA = 0.78
 
+#: The overlay is single-hue by design. The UI is black and red, where red means
+#: attention and nothing else, so a multi-hue colormap like TURBO would introduce
+#: greens and blues that read as *categories* rather than as intensity. Anomaly is
+#: one scalar; it gets one colour, from a dim red at the threshold to a bright red
+#: at the peak. BGR order, because that is what cv2.imencode writes.
+HEATMAP_COLD_BGR = (20, 20, 193)  # #c11414 -- just over the pixel threshold
+HEATMAP_HOT_BGR = (45, 45, 255)  # #ff2d2d -- peak anomaly
+
 
 def heatmap_png(norm_map: np.ndarray, target_size: tuple[int, int]) -> bytes:
-    """Render the normalised heatmap as an alpha-ramped RGBA PNG at the frame's size.
+    """Render the normalised heatmap as an alpha-ramped single-hue RGBA PNG.
 
     Alpha rises with anomaly, so only the regions that actually exceeded the
     pixel threshold tint the frame. A flat opaque overlay would hide the very
@@ -202,10 +210,13 @@ def heatmap_png(norm_map: np.ndarray, target_size: tuple[int, int]) -> bytes:
     resized = cv2.resize(norm_map, (tw, th), interpolation=cv2.INTER_LINEAR)
     resized = np.nan_to_num(resized, nan=0.0, posinf=1.0, neginf=0.0)
 
-    as_u8 = np.clip(resized * 255.0, 0, 255).astype(np.uint8)
-    coloured = cv2.applyColorMap(as_u8, cv2.COLORMAP_TURBO)
-
+    # One ramp drives both the red intensity and the opacity, so a hotter pixel is
+    # both brighter and more opaque rather than merely a different colour.
     ramp = np.clip((resized - HEATMAP_FLOOR) / max(1e-6, 1.0 - HEATMAP_FLOOR), 0.0, 1.0)
+    cold = np.array(HEATMAP_COLD_BGR, dtype=np.float32)
+    hot = np.array(HEATMAP_HOT_BGR, dtype=np.float32)
+    coloured = (cold + ramp[..., None] * (hot - cold)).astype(np.uint8)
+
     alpha = (ramp * HEATMAP_MAX_ALPHA * 255.0).astype(np.uint8)
 
     rgba = np.dstack([coloured, alpha])

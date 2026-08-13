@@ -4,6 +4,17 @@ import { useEffect, useState } from "react";
 import { fetchModels, imageUrl } from "@/lib/api";
 import type { ModelsResponse } from "@/lib/types";
 
+/**
+ * Dataset licence follows the corpus a model was trained on. MVTec AD is
+ * CC BY-NC-SA 4.0 -- non-commercial -- and that constraint has to be visible
+ * on the registry itself, not buried in a README.
+ */
+function licenceFor(assetClass: string): string {
+  if (assetClass.startsWith("mvtec_")) return "MVTec AD — CC BY-NC-SA 4.0 — NON-COMMERCIAL USE ONLY";
+  if (assetClass.startsWith("visa_")) return "VisA — CC BY 4.0 — commercial use permitted";
+  return "Licence — unspecified";
+}
+
 export default function RegistryPage() {
   const [data, setData] = useState<ModelsResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -23,11 +34,11 @@ export default function RegistryPage() {
   }, []);
 
   return (
-    <div className="flex flex-col gap-6">
-      <header className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Model registry</h1>
-          <p className="muted mt-1 max-w-3xl text-sm">
+    <div className="stack-lg">
+      <header className="row-between">
+        <div className="stack">
+          <h1>Model registry</h1>
+          <p className="lede small">
             Every specialist GridSight can route to. Weights live in GridFS; the 512-d embedding is
             the centroid of what each model was trained on, and the gate is the coverage envelope it
             will accept a frame inside.
@@ -35,11 +46,7 @@ export default function RegistryPage() {
         </div>
         {data ? (
           <span
-            className="rounded-full px-2.5 py-1 text-xs font-semibold"
-            style={{
-              background: data.vector_index === "READY" ? "var(--ok)" : "var(--warn)",
-              color: "#0b0f14",
-            }}
+            className={`badge ${data.vector_index === "READY" ? "badge-nominal" : "badge-unroutable"}`}
           >
             Vector index {data.vector_index ?? "missing"}
           </span>
@@ -47,30 +54,28 @@ export default function RegistryPage() {
       </header>
 
       {error ? (
-        <p className="surface rounded-lg p-4 text-sm" style={{ color: "var(--danger)" }} role="alert">
+        <p className="panel-alert small mono red" role="alert">
           {error}
         </p>
       ) : null}
 
-      <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">
+      <div className="grid-cards">
         {(data?.models ?? []).map((m) => {
           const ref = imageUrl(m.reference_image_url);
+          const coldStarted = m.created_by === "agent-coldstart";
           return (
-            <article key={m.id} className="surface flex flex-col gap-3 rounded-lg p-4">
-              <div className="flex items-start justify-between gap-2">
-                <div className="min-w-0">
-                  <h2 className="mono truncate text-sm font-semibold">{m.name}</h2>
-                  <p className="muted text-xs">{m.asset_class}</p>
+            <article key={m.id} className="panel stack">
+              <div className="row-between" style={{ alignItems: "flex-start" }}>
+                <div style={{ minWidth: 0 }}>
+                  <h2 className="mono" style={{ fontSize: "15px" }}>
+                    {m.name}
+                  </h2>
+                  <p className="caps" style={{ marginTop: "4px" }}>
+                    {m.asset_class}
+                  </p>
                 </div>
-                <span
-                  className="shrink-0 rounded-full px-2 py-0.5 text-[11px] font-semibold"
-                  style={{
-                    background: m.created_by === "agent-coldstart" ? "var(--accent)" : "var(--surface-2)",
-                    color: m.created_by === "agent-coldstart" ? "#0b0f14" : "var(--text-muted)",
-                    border: "1px solid var(--border)",
-                  }}
-                >
-                  {m.created_by === "agent-coldstart" ? "cold-started" : "seed"}
+                <span className={coldStarted ? "tag tag-strong" : "tag"} style={{ flex: "0 0 auto" }}>
+                  {coldStarted ? "cold-started" : "seed"}
                 </span>
               </div>
 
@@ -79,12 +84,24 @@ export default function RegistryPage() {
                 <img
                   src={ref}
                   alt={`Golden known-good reference for ${m.asset_class}`}
-                  className="aspect-square w-full rounded-md object-cover"
-                  style={{ border: "1px solid var(--border)" }}
+                  style={{
+                    width: "100%",
+                    aspectRatio: "1 / 1",
+                    objectFit: "cover",
+                    border: "1px solid var(--line)",
+                  }}
                 />
               ) : null}
 
-              <dl className="m-0 grid grid-cols-2 gap-x-3 gap-y-1.5 text-xs">
+              <dl
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "1fr auto",
+                  gap: "5px 12px",
+                  alignItems: "baseline",
+                  margin: 0,
+                }}
+              >
                 {[
                   ["Backbone", m.backbone],
                   ["Training samples", String(m.training_samples)],
@@ -101,12 +118,16 @@ export default function RegistryPage() {
                   ["Weights", `${(m.weights_bytes / 1e6).toFixed(2)} MB`],
                   ["Embedding", `${m.embedding_dim}-d`],
                 ].map(([k, v]) => (
-                  <div key={k} className="contents">
-                    <dt className="muted">{k}</dt>
-                    <dd className="mono m-0 text-right">{v}</dd>
+                  <div key={k} style={{ display: "contents" }}>
+                    <dt className="caps">{k}</dt>
+                    <dd className="mono tiny" style={{ margin: 0, textAlign: "right" }}>
+                      {v}
+                    </dd>
                   </div>
                 ))}
               </dl>
+
+              <p className="tiny faint">{licenceFor(m.asset_class)}</p>
             </article>
           );
         })}

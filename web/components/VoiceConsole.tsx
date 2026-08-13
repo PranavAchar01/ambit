@@ -52,11 +52,15 @@ const STATUS_COPY: Record<VoiceStatus, string> = {
   error: "Connection error",
 };
 
+/**
+ * Live is a normal state, so it is colourless. Red is spent only on the states
+ * that want a human: dropped, errored, or mid-negotiation.
+ */
 function statusColor(status: VoiceStatus): string {
-  if (status === "live") return "var(--ok)";
-  if (status === "error") return "var(--danger)";
-  if (status === "minting" || status === "negotiating") return "var(--warn)";
-  return "var(--text-muted)";
+  if (status === "live") return "var(--fg)";
+  if (status === "error" || status === "closed") return "var(--red)";
+  if (status === "minting" || status === "negotiating") return "var(--red)";
+  return "var(--fg-faint)";
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -219,26 +223,26 @@ export function VoiceConsole() {
   const busy = status === "minting" || status === "negotiating";
 
   return (
-    <div className="flex flex-col gap-4">
+    <div className="stack">
       {/* Realtime speech: the answer is captioned live in the transcript below. */}
-      <audio ref={audioRef} autoPlay className="hidden" />
+      <audio ref={audioRef} autoPlay style={{ display: "none" }} />
 
-      <div className="surface flex flex-wrap items-center gap-3 rounded-lg p-3">
-        <span className="flex items-center gap-2 text-sm font-medium">
+      <div className="panel row">
+        <span className="row" style={{ gap: "var(--step)", flexWrap: "nowrap" }}>
           <span
             aria-hidden
-            className={`inline-block h-2.5 w-2.5 rounded-full ${live ? "step-active" : ""}`}
-            style={{ background: statusColor(status) }}
+            className="step-mark"
+            data-live={busy ? "true" : undefined}
+            style={{ marginTop: 0, background: statusColor(status) }}
           />
-          {STATUS_COPY[status]}
+          <span className="small">{STATUS_COPY[status]}</span>
         </span>
 
         <button
           type="button"
           onClick={live ? disconnect : () => void connect()}
           disabled={busy}
-          className="rounded px-3 py-1.5 text-sm font-semibold disabled:opacity-60"
-          style={{ background: live ? "var(--surface-2)" : "var(--accent)", color: live ? "var(--text)" : "#fff" }}
+          className={live ? "btn" : "btn btn-primary"}
         >
           {live ? "Disconnect" : busy ? "Connecting…" : "Start voice session"}
         </button>
@@ -251,51 +255,54 @@ export function VoiceConsole() {
               connectionRef.current?.setMicEnabled(next);
               setMicOn(next);
             }}
-            className="rounded px-3 py-1.5 text-sm"
-            style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}
+            className="btn"
             aria-pressed={!micOn}
           >
             {micOn ? "Mute mic" : "Unmute mic"}
           </button>
         ) : null}
 
-        <span className="muted mono ml-auto text-xs">
+        <span className="mono tiny muted" style={{ marginLeft: "auto" }}>
           {model ? `${model} · ${toolCount} MongoDB tools` : "no session"}
         </span>
       </div>
 
       {notice ? (
-        <p className="surface rounded-lg p-3 text-sm" role="alert" style={{ color: "var(--warn)" }}>
+        <p className="panel-alert small red" role="alert">
           {notice}
         </p>
       ) : null}
 
-      <div className="grid gap-4 lg:grid-cols-2">
-        <section className="surface flex min-w-0 flex-col rounded-lg p-4">
-          <h2 className="text-sm font-semibold tracking-tight">Transcript</h2>
+      <div className="grid-2">
+        <section className="panel" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <h2 className="panel-hd">Transcript</h2>
           <div
             ref={transcriptRef}
-            className="mt-3 flex max-h-[26rem] min-h-[12rem] flex-col gap-3 overflow-y-auto"
+            className="stack"
+            style={{ maxHeight: "26rem", minHeight: "12rem", overflowY: "auto" }}
             aria-live="polite"
           >
             {utterances.length === 0 ? (
-              <p className="muted text-sm">
+              <p className="muted small">
                 {live
                   ? "Ask about the fleet — speak, or use a question below."
                   : "Start a session to talk to the fleet analyst."}
               </p>
             ) : (
               utterances.map((u) => (
-                <div key={u.id} className="flex min-w-0 flex-col gap-1">
+                <div
+                  key={u.id}
+                  style={{ display: "flex", flexDirection: "column", gap: "4px", minWidth: 0 }}
+                >
                   <span
-                    className="text-xs font-semibold uppercase tracking-wide"
-                    style={{ color: u.role === "operator" ? "var(--text-muted)" : "var(--accent)" }}
+                    className="caps"
+                    style={{ color: u.role === "operator" ? "var(--fg-faint)" : "var(--fg)" }}
                   >
                     {u.role === "operator" ? "Operator" : "GridSight"}
                   </span>
-                  <p className="m-0 break-words text-sm">
+                  <p className="small" style={{ wordBreak: "break-word" }}>
                     {u.text}
-                    {u.pending ? <span className="step-active"> ▌</span> : null}
+                    {u.pending ? <span className="faint"> ▌</span> : null}
                   </p>
                 </div>
               ))
@@ -303,7 +310,7 @@ export function VoiceConsole() {
           </div>
 
           <form
-            className="mt-3 flex gap-2"
+            style={{ display: "flex", gap: "var(--step)", marginTop: "calc(var(--step) * 2)" }}
             onSubmit={(e) => {
               e.preventDefault();
               ask(typed);
@@ -319,62 +326,48 @@ export function VoiceConsole() {
               onChange={(e) => setTyped(e.target.value)}
               disabled={!live}
               placeholder={live ? "…or type a question" : "Connect first"}
-              className="min-w-0 flex-1 rounded px-3 py-2 text-sm"
-              style={{ background: "var(--surface-2)", border: "1px solid var(--border)", color: "var(--text)" }}
+              className="input"
+              style={{ flex: "1 1 auto", minWidth: 0 }}
             />
-            <button
-              type="submit"
-              disabled={!live || !typed.trim()}
-              className="rounded px-3 py-2 text-sm font-semibold disabled:opacity-50"
-              style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}
-            >
+            <button type="submit" disabled={!live || !typed.trim()} className="btn">
               Ask
             </button>
           </form>
 
-          <div className="mt-3 flex flex-wrap gap-2">
+          <div className="row" style={{ gap: "var(--step)", marginTop: "calc(var(--step) * 2)" }}>
             {SUGGESTIONS.map((q) => (
-              <button
-                key={q}
-                type="button"
-                onClick={() => ask(q)}
-                disabled={!live}
-                className="rounded-full px-3 py-1 text-xs disabled:opacity-50"
-                style={{ background: "var(--surface-2)", border: "1px solid var(--border)" }}
-              >
+              <button key={q} type="button" onClick={() => ask(q)} disabled={!live} className="btn">
                 {q}
               </button>
             ))}
           </div>
         </section>
 
-        <section className="surface flex min-w-0 flex-col rounded-lg p-4">
-          <h2 className="text-sm font-semibold tracking-tight">MongoDB tool calls</h2>
-          <p className="muted mt-1 text-xs">
+        <section className="panel" style={{ display: "flex", flexDirection: "column", minWidth: 0 }}>
+          <h2 className="panel-hd">MongoDB tool calls</h2>
+          <p className="muted tiny">
             Every claim the analyst makes has to appear here first. Tools execute on the API, against
             Atlas — the browser only relays the call.
           </p>
-          <ol className="m-0 mt-3 flex max-h-[30rem] list-none flex-col gap-3 overflow-y-auto p-0">
+          <ol
+            className="stack"
+            style={{ maxHeight: "30rem", overflowY: "auto", marginTop: "calc(var(--step) * 2)" }}
+          >
             {tools.length === 0 ? (
-              <li className="muted text-sm">No tool has run yet.</li>
+              <li className="muted small">No tool has run yet.</li>
             ) : (
               tools.map((t) => (
-                <li key={t.callId} className="min-w-0 rounded p-3" style={{ background: "var(--surface-2)" }}>
-                  <div className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
-                    <span className="mono text-sm font-semibold">{t.name}</span>
-                    <span className="mono muted min-w-0 break-all text-xs">
+                <li key={t.callId} className="panel" style={{ minWidth: 0 }}>
+                  <div className="row" style={{ gap: "var(--step)", alignItems: "baseline" }}>
+                    <span className="mono small" style={{ fontWeight: 700 }}>
+                      {t.name}
+                    </span>
+                    <span className="mono tiny faint" style={{ minWidth: 0, wordBreak: "break-all" }}>
                       {JSON.stringify(t.args)}
                     </span>
                     <span
-                      className="mono ml-auto text-xs"
-                      style={{
-                        color:
-                          t.status === "error"
-                            ? "var(--danger)"
-                            : t.status === "done"
-                              ? "var(--ok)"
-                              : "var(--warn)",
-                      }}
+                      className={`mono tiny${t.status === "error" ? " red" : t.status === "running" ? " muted" : ""}`}
+                      style={{ marginLeft: "auto" }}
                     >
                       {t.status === "running"
                         ? "querying Atlas…"
@@ -383,15 +376,22 @@ export function VoiceConsole() {
                           : `${t.latencyMs ?? 0} ms`}
                     </span>
                   </div>
-                  <p className="m-0 mt-1.5 break-words text-sm">
+                  <p className="small" style={{ marginTop: "6px", wordBreak: "break-word" }}>
                     {t.status === "error" ? t.error : t.status === "done" ? summarise(t.name, t.result) : "…"}
                   </p>
                   {t.status === "done" ? (
-                    <details className="mt-2">
-                      <summary className="muted cursor-pointer text-xs">Raw result</summary>
+                    <details style={{ marginTop: "var(--step)" }}>
+                      <summary className="caps">Raw result</summary>
                       <pre
-                        className="mono mt-2 max-h-56 overflow-auto rounded p-2 text-xs"
-                        style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
+                        className="mono tiny"
+                        style={{
+                          marginTop: "var(--step)",
+                          maxHeight: "14rem",
+                          overflow: "auto",
+                          padding: "var(--step)",
+                          background: "var(--surface-2)",
+                          border: "1px solid var(--line)",
+                        }}
                       >
                         {JSON.stringify(t.result, null, 2)}
                       </pre>

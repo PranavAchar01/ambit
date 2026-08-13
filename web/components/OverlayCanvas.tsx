@@ -21,10 +21,22 @@ function loadImage(src: string): Promise<HTMLImageElement> {
   });
 }
 
+/**
+ * Black-and-red ramp: red is attention and nothing else. A confident detection
+ * is full red, a middling one a dimmer red, a weak one plain grey — never a hue.
+ */
 function severityColor(score: number): string {
-  if (score >= 0.75) return "#ef4444";
-  if (score >= 0.5) return "#f59e0b";
-  return "#38bdf8";
+  if (score >= 0.75) return "#ff2d2d";
+  if (score >= 0.5) return "#c11414";
+  return "#9a9a9a";
+}
+
+/** The canvas cannot resolve var(--mono), so read the stack off the document. */
+function monoStack(): string {
+  const declared = getComputedStyle(document.documentElement)
+    .getPropertyValue("--mono")
+    .trim();
+  return declared || "monospace";
 }
 
 /**
@@ -67,6 +79,7 @@ export function OverlayCanvas({ imageUrl, heatmapUrl, regions, heatOpacity = 1 }
         const scale = Math.max(canvas.width, canvas.height) / 640;
         const lineWidth = Math.max(2, 3 * scale);
         const fontSize = Math.max(12, 15 * scale);
+        const mono = monoStack();
 
         regions.forEach((r, i) => {
           const colour = severityColor(r.score);
@@ -75,13 +88,13 @@ export function OverlayCanvas({ imageUrl, heatmapUrl, regions, heatOpacity = 1 }
           ctx.setLineDash([]);
           ctx.strokeRect(r.x, r.y, r.w, r.h);
 
-          // a soft halo so the outline reads against both bright and dark pixels
+          // a dark halo so the outline reads against both bright and dark pixels
           ctx.lineWidth = lineWidth / 3;
           ctx.strokeStyle = "rgba(0,0,0,0.65)";
           ctx.strokeRect(r.x - lineWidth / 2, r.y - lineWidth / 2, r.w + lineWidth, r.h + lineWidth);
 
           const label = `#${i + 1} ${(r.score * 100).toFixed(0)}%`;
-          ctx.font = `600 ${fontSize}px ui-sans-serif, system-ui, sans-serif`;
+          ctx.font = `700 ${fontSize}px ${mono}`;
           const metrics = ctx.measureText(label);
           const padX = 6 * scale;
           const boxH = fontSize + 8 * scale;
@@ -90,9 +103,10 @@ export function OverlayCanvas({ imageUrl, heatmapUrl, regions, heatOpacity = 1 }
           const labelX = Math.min(Math.max(r.x - lineWidth / 2, 0), canvas.width - boxW);
           const labelY = r.y - boxH < 0 ? Math.min(r.y + r.h, canvas.height - boxH) : r.y - boxH;
 
-          ctx.fillStyle = colour;
+          // the chip is always red on black: it marks a thing that wants looking at
+          ctx.fillStyle = "#ff2d2d";
           ctx.fillRect(labelX, labelY, boxW, boxH);
-          ctx.fillStyle = "#0b0f14";
+          ctx.fillStyle = "#000000";
           ctx.fillText(label, labelX + padX, labelY + fontSize);
         });
       } catch (err) {
@@ -106,15 +120,18 @@ export function OverlayCanvas({ imageUrl, heatmapUrl, regions, heatOpacity = 1 }
   }, [imageUrl, heatmapUrl, regions, showHeat, showBoxes, heatOpacity]);
 
   return (
-    <figure className="m-0">
+    <figure>
       <canvas
         ref={canvasRef}
-        className="w-full rounded-lg"
-        style={{ border: "1px solid var(--border)", background: "var(--surface-2)" }}
+        style={{
+          width: "100%",
+          border: "1px solid var(--line)",
+          background: "var(--surface-2)",
+        }}
       />
-      <figcaption className="mt-2 flex flex-wrap items-center gap-3 text-xs">
+      <figcaption className="row tiny mono" style={{ marginTop: "var(--step)" }}>
         {heatmapUrl ? (
-          <label className="flex items-center gap-1.5">
+          <label className="row" style={{ gap: "6px" }}>
             <input
               type="checkbox"
               checked={showHeat}
@@ -123,7 +140,7 @@ export function OverlayCanvas({ imageUrl, heatmapUrl, regions, heatOpacity = 1 }
             Heatmap
           </label>
         ) : null}
-        <label className="flex items-center gap-1.5">
+        <label className="row" style={{ gap: "6px" }}>
           <input
             type="checkbox"
             checked={showBoxes}
@@ -131,7 +148,7 @@ export function OverlayCanvas({ imageUrl, heatmapUrl, regions, heatOpacity = 1 }
           />
           Regions ({regions.length})
         </label>
-        {error ? <span style={{ color: "var(--danger)" }}>{error}</span> : null}
+        {error ? <span className="red">{error}</span> : null}
       </figcaption>
     </figure>
   );

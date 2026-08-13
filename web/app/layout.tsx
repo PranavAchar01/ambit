@@ -1,56 +1,46 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import "./globals.css";
-import { ThemeToggle } from "@/components/ThemeToggle";
 
 export const metadata: Metadata = {
-  title: "GridSight — vector-routed inspection registry",
+  title: "GridSight — a registry of inspection competence",
   description:
-    "MongoDB-backed registry of anomaly-detection specialists, routed by vector search over what each model was trained on.",
+    "A registry of anomaly-detection specialists on MongoDB Atlas. It knows what it can inspect, and refuses what it cannot.",
 };
+
+const NAV: ReadonlyArray<{ href: string; label: string }> = [
+  { href: "/", label: "Inspect" },
+  { href: "/registry", label: "Registry" },
+  { href: "/trends", label: "Trends" },
+  { href: "/voice", label: "Voice" },
+];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en" suppressHydrationWarning>
-      <body className="min-h-screen">
-        <a
-          href="#main"
-          className="sr-only focus:not-sr-only focus:absolute focus:left-3 focus:top-3 focus:z-50 focus:rounded focus:px-3 focus:py-2"
-          style={{ background: "var(--surface)", border: "1px solid var(--border)" }}
-        >
+    <html lang="en">
+      <body>
+        <a href="#main" className="skip-link">
           Skip to content
         </a>
-        <header
-          className="sticky top-0 z-40 backdrop-blur"
-          style={{ background: "color-mix(in srgb, var(--bg) 88%, transparent)", borderBottom: "1px solid var(--border)" }}
-        >
-          <nav className="mx-auto flex max-w-7xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3 sm:px-6">
-            <Link href="/" className="flex items-center gap-2 font-semibold tracking-tight">
-              <span
-                aria-hidden
-                className="inline-block h-2.5 w-2.5 rounded-full"
-                style={{ background: "var(--accent)" }}
-              />
-              GridSight
-            </Link>
-            <div className="flex flex-1 items-center gap-4 text-sm">
-              <Link href="/" className="hover:underline">
-                Inspect
+
+        <header className="masthead">
+          <div className="shell">
+            <div className="masthead-inner">
+              <Link href="/" className="wordmark">
+                GridSight
               </Link>
-              <Link href="/registry" className="hover:underline">
-                Registry
-              </Link>
-              <Link href="/trends" className="hover:underline">
-                Trends
-              </Link>
-              <Link href="/voice" className="hover:underline">
-                Voice
-              </Link>
+              <nav className="nav" aria-label="Primary">
+                {NAV.map((item) => (
+                  <Link key={item.href} href={item.href}>
+                    {item.label}
+                  </Link>
+                ))}
+              </nav>
             </div>
-            <ThemeToggle />
-          </nav>
+          </div>
         </header>
-        <main id="main" className="mx-auto w-full max-w-7xl px-4 py-6 sm:px-6">
+
+        <main id="main" className="shell main">
           {children}
         </main>
       </body>

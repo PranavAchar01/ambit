@@ -89,10 +89,10 @@ export function RegistryMap({ steps, running }: { steps: AgentStep[]; running: b
   const active = phase !== "idle" && phase !== "embedding";
 
   return (
-    <figure className="m-0">
+    <figure style={{ margin: 0 }}>
       <svg
         viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        className="h-auto w-full"
+        style={{ width: "100%", height: "auto" }}
         role="img"
         aria-label="Live map of the routing decision across the model registry"
       >
@@ -104,7 +104,7 @@ export function RegistryMap({ steps, running }: { steps: AgentStep[]; running: b
             cy={CY}
             r={R_MAX * f}
             fill="none"
-            stroke="var(--grid)"
+            stroke="var(--line)"
             strokeWidth={1}
             strokeDasharray={f === 1 ? undefined : "3 5"}
           />
@@ -120,13 +120,15 @@ export function RegistryMap({ steps, running }: { steps: AgentStep[]; running: b
           const dot = pointAt(m.angle, dotR);
           const inside = cand ? cand.score >= m.gate : false;
 
+          // Red means out of range. The winner is simply the brightest thing on
+          // the map — success is the absence of red, never a second hue.
           const colour = !active
-            ? "var(--text-muted)"
+            ? "var(--fg-faint)"
             : isWinner
-              ? "var(--ok)"
+              ? "var(--fg)"
               : inside
-                ? "var(--accent)"
-                : "var(--warn)";
+                ? "var(--fg-dim)"
+                : "var(--red)";
           const label = pointAt(m.angle, R_MAX + 26);
 
           return (
@@ -137,7 +139,7 @@ export function RegistryMap({ steps, running }: { steps: AgentStep[]; running: b
                 y1={CY}
                 x2={rimP.x}
                 y2={rimP.y}
-                stroke="var(--grid)"
+                stroke="var(--line)"
                 strokeWidth={1}
               />
               {/* gate tick: the model's declared competence boundary */}
@@ -146,7 +148,7 @@ export function RegistryMap({ steps, running }: { steps: AgentStep[]; running: b
                 y1={gateP.y + Math.cos(m.angle) * 11}
                 x2={gateP.x + Math.sin(m.angle) * 11}
                 y2={gateP.y - Math.cos(m.angle) * 11}
-                stroke={active && !inside ? "var(--warn)" : "var(--text-muted)"}
+                stroke={active && !inside ? "var(--red)" : "var(--fg-dim)"}
                 strokeWidth={2.5}
                 strokeLinecap="round"
                 opacity={0.85}
@@ -165,7 +167,7 @@ export function RegistryMap({ steps, running }: { steps: AgentStep[]; running: b
                 </title>
               </circle>
               {isWinner ? (
-                <circle cx={dot.x} cy={dot.y} r={17} fill="none" stroke="var(--ok)" strokeWidth={2}>
+                <circle cx={dot.x} cy={dot.y} r={17} fill="none" stroke="var(--fg)" strokeWidth={2}>
                   <animate attributeName="r" values="12;22;12" dur="1.6s" repeatCount="indefinite" />
                   <animate attributeName="opacity" values="0.9;0;0.9" dur="1.6s" repeatCount="indefinite" />
                 </circle>
@@ -176,7 +178,7 @@ export function RegistryMap({ steps, running }: { steps: AgentStep[]; running: b
                 textAnchor={Math.cos(m.angle) > 0.3 ? "start" : Math.cos(m.angle) < -0.3 ? "end" : "middle"}
                 dominantBaseline="middle"
                 fontSize={11}
-                fill={isWinner ? "var(--ok)" : "var(--text-muted)"}
+                fill={isWinner ? "var(--fg)" : "var(--fg-dim)"}
                 fontWeight={isWinner ? 700 : 400}
               >
                 {m.asset_class}
@@ -203,16 +205,16 @@ export function RegistryMap({ steps, running }: { steps: AgentStep[]; running: b
           cx={CX}
           cy={CY}
           r={13}
-          fill={phase === "refused" ? "var(--warn)" : "var(--accent)"}
+          fill={phase === "refused" ? "var(--red)" : "var(--fg)"}
           opacity={phase === "idle" ? 0.3 : 1}
         />
         {running ? (
-          <circle cx={CX} cy={CY} r={13} fill="none" stroke="var(--accent)" strokeWidth={2}>
+          <circle cx={CX} cy={CY} r={13} fill="none" stroke="var(--red)" strokeWidth={2}>
             <animate attributeName="r" values="13;30;13" dur="1.8s" repeatCount="indefinite" />
             <animate attributeName="opacity" values="0.8;0;0.8" dur="1.8s" repeatCount="indefinite" />
           </circle>
         ) : null}
-        <text x={CX} y={CY + 34} textAnchor="middle" fontSize={11} fill="var(--text-muted)">
+        <text x={CX} y={CY + 34} textAnchor="middle" fontSize={11} fill="var(--fg-dim)">
           frame
         </text>
 
@@ -223,14 +225,14 @@ export function RegistryMap({ steps, running }: { steps: AgentStep[]; running: b
             textAnchor="middle"
             fontSize={13}
             fontWeight={700}
-            fill="var(--warn)"
+            fill="var(--red)"
           >
             every model out of range — refusing
           </text>
         ) : null}
       </svg>
 
-      <figcaption className="muted mt-2 text-xs">
+      <figcaption className="muted tiny" style={{ marginTop: "var(--step)" }}>
         Distance from the centre is <span className="mono">1 − similarity</span>, measured. The tick on
         each spoke is that model&apos;s coverage gate; a dot <strong>inside</strong> its tick means the
         frame is within the competence that model learned. Angle is illustrative ordering only.
