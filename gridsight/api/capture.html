@@ -103,36 +103,39 @@
   const params = new URLSearchParams(location.search);
   const SESSION = params.get("s") || "demo";
 
-  // Preview is deliberately tiny. It is a viewfinder for the audience, not the
-  // thing that gets inspected -- the inspected frame is captured at full
-  // sensor resolution further down.
-  // 30 is a ceiling to aim at, not a promise. The encoder and uplink guards in
-  // pushPreview() shed frames when the phone cannot keep up, so asking for 30
-  // and landing at two thirds still clears 20 -- whereas asking for 20 and
-  // missing leaves you at 13. Measured: relay and projected canvas sustain 60
-  // fps with zero drops, so everything below this line is phone-side headroom.
-  // Budget ~24KB/frame at this size and quality: 30fps is ~5.7 Mbps upstream,
-  // which good WiFi carries and cellular generally will not.
-  const PREVIEW_W = 480, PREVIEW_H = 360, PREVIEW_Q = 0.5, PREVIEW_FPS = 30;
-  // Motion detection needs a getImageData readback, which stalls the GPU
-  // pipeline. Running it at preview rate was the single biggest cost per frame,
-  // and hold-still detection does not need 24Hz to resolve a 2s gesture.
-  const MOTION_HZ = 8;
-  const HOLD_MS = 2000;          // how long "still" must last to fire
-  const STILL_THRESHOLD = 0.012; // mean abs luma delta, 0..1
-  const MOVED_THRESHOLD = 0.030; // must exceed this to re-arm after a result
-  const UPLINK_LIMIT = 384 * 1024; // drop preview frames rather than queue them
+  /* --------------------------------------------------------------------
+   * Frame rate is camera-bound, not pipeline-bound.
+   *
+   * Measured: the relay and the projected canvas sustain 120 fps with zero
+   * drops, so nothing downstream is the limit. Everything here exists to stop
+   * the phone from being one:
+   *
+   *   - requestVideoFrameCallback paces capture to the camera itself, so we
+   *     never encode the same frame twice and never miss one. A rAF loop at a
+   *     fixed interval does both.
+   *   - JPEG encoding runs in a worker on an OffscreenCanvas. On the main
+   *     thread it competed with the viewfinder's own compositing.
+   *   - The worker owns the socket, so frame bytes never touch the main thread.
+   *   - Quality adapts to the uplink instead of frames being dropped: a phone
+   *     on hotel wifi degrades to softer frames at full rate rather than a
+   *     stuttering slideshow.
+   * ------------------------------------------------------------------ */
+  const PREVIEW_W = 480, PREVIEW_H = 360;
+  const CAMERA_FPS = 60;           // asked for; the device grants what it can
+  const Q_MAX = 0.62, Q_MIN = 0.28, Q_START = 0.5;
+  const UPLINK_HIGH = 192 * 1024;  // back off quality above this backlog
+  const UPLINK_LOW = 48 * 1024;    // recover quality below it
+  const MAX_INFLIGHT = 3;          // outstanding encodes before we skip a frame
+
+  const MOTION_HZ = 8;             // getImageData is a GPU stall; 8Hz resolves a 2s hold
+  const HOLD_MS = 2000;
+  const STILL_THRESHOLD = 0.012;
+  const MOVED_THRESHOLD = 0.030;
 
   const el = (id) => document.getElementById(id);
   const video = el("v");
   el("sid").textContent = SESSION;
 
-  const preview = document.createElement("canvas");
-  preview.width = PREVIEW_W; preview.height = PREVIEW_H;
-  const pctx = preview.getContext("2d");
-
-  // 64x48 greyscale is plenty to tell "held still" from "moving", and costs
-  // nothing to read back every tick.
   const probe = document.createElement("canvas");
   probe.width = 64; probe.height = 48;
   const xctx = probe.getContext("2d", { willReadFrequently: true });
@@ -140,15 +143,91 @@
   const full = document.createElement("canvas");
   const fctx = full.getContext("2d");
 
-  let ws = null, wsReady = false;
   let prevLuma = null, stillMs = 0, state = "idle";
-  let lastPreview = 0, lastMotion = 0, encoding = false;
-  let framesSent = 0, fpsAt = 0, fpsCount = 0;
+  let lastMotion = 0, inflight = 0, wsReady = false;
+  let framesSent = 0, fpsCount = 0, fpsAt = 0, quality = Q_START;
+  // Mirrored back from the worker. Adapting quality is not sufficient on its
+  // own: measured, a producer outrunning the socket pushed the backlog to 23 MB
+  // even with quality pinned at the floor, because dropping 0.62 -> 0.28 only
+  // halves the bytes. The producer has to stop, so the worker's view of
+  // bufferedAmount has to reach the thread that decides whether to capture.
+  let socketBacklog = 0, skippedForBacklog = 0;
+
+  /* ---------------- encoder worker ---------------- */
+  // Inlined as a blob so the phone client stays a single file. A blob worker
+  // inherits this origin, so its socket needs no extra CORS or auth.
+  const WORKER_SRC = `
+    let ws = null, canvas = null, ctx = null, quality = ${Q_START}, sent = 0;
+    const Q_MAX = ${Q_MAX}, Q_MIN = ${Q_MIN};
+    const HIGH = ${UPLINK_HIGH}, LOW = ${UPLINK_LOW};
+    let clearStreak = 0;
+
+    function connect(url) {
+      ws = new WebSocket(url);
+      ws.binaryType = "arraybuffer";
+      ws.onopen = () => postMessage({ type: "ws", ready: true });
+      ws.onclose = () => { postMessage({ type: "ws", ready: false }); setTimeout(() => connect(url), 1000); };
+      ws.onerror = () => ws && ws.close();
+    }
+
+    self.onmessage = async (e) => {
+      const m = e.data;
+      if (m.type === "connect") { connect(m.url); return; }
+      if (m.type === "json") { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m.payload)); return; }
+      // While saturated the producer stops sending frames, so frame-carried
+      // backlog reports stop too and its reading would stay stale-high forever.
+      // A poll is how the producer learns the socket has drained.
+      if (m.type === "poll") {
+        postMessage({ type: "sent", sent, quality, buffered: ws ? ws.bufferedAmount : 0 });
+        return;
+      }
+      if (m.type !== "frame") return;
+
+      const bmp = m.bitmap;
+      if (!ws || ws.readyState !== 1) { bmp.close(); postMessage({ type: "done" }); return; }
+
+      // Adapt quality to the backlog rather than dropping frames outright.
+      if (ws.bufferedAmount > HIGH) {
+        quality = Math.max(Q_MIN, quality - 0.06);
+        clearStreak = 0;
+      } else if (ws.bufferedAmount < LOW && ++clearStreak > 30) {
+        quality = Math.min(Q_MAX, quality + 0.02);
+        clearStreak = 0;
+      }
+
+      if (!canvas) {
+        canvas = new OffscreenCanvas(${PREVIEW_W}, ${PREVIEW_H});
+        ctx = canvas.getContext("2d", { alpha: false });
+      }
+      ctx.drawImage(bmp, 0, 0, ${PREVIEW_W}, ${PREVIEW_H});
+      bmp.close();
+
+      try {
+        const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
+        if (ws && ws.readyState === 1) { ws.send(blob); sent++; }
+        postMessage({ type: "sent", sent, quality, buffered: ws ? ws.bufferedAmount : 0 });
+      } catch (err) {
+        postMessage({ type: "encerr", message: String(err) });
+      }
+      postMessage({ type: "done" });
+    };
+  `;
+
+  const workerSupported =
+    typeof Worker !== "undefined" &&
+    typeof OffscreenCanvas !== "undefined" &&
+    typeof createImageBitmap === "function" &&
+    OffscreenCanvas.prototype.convertToBlob;
+
+  let worker = null;
+  // Fallback path for iOS below 16.4, which lacks OffscreenCanvas.convertToBlob.
+  let fbCanvas = null, fbCtx = null, fbSocket = null;
 
   function setDot(id, on) { el(id).dataset.on = on ? "true" : "false"; }
 
   function send(obj) {
-    if (wsReady) ws.send(JSON.stringify(obj));
+    if (worker) worker.postMessage({ type: "json", payload: obj });
+    else if (fbSocket && fbSocket.readyState === 1) fbSocket.send(JSON.stringify(obj));
   }
 
   function setPhase(phase, extra) {
@@ -156,13 +235,69 @@
     send(Object.assign({ type: "phase", phase: phase }, extra || {}));
   }
 
-  function connect() {
+  function socketUrl() {
     const scheme = location.protocol === "https:" ? "wss" : "ws";
-    ws = new WebSocket(`${scheme}://${location.host}/live/publish/${encodeURIComponent(SESSION)}`);
-    ws.binaryType = "arraybuffer";
-    ws.onopen = () => { wsReady = true; setDot("dws", true); setPhase(state); };
-    ws.onclose = () => { wsReady = false; setDot("dws", false); setTimeout(connect, 1000); };
-    ws.onerror = () => ws.close();
+    return `${scheme}://${location.host}/live/publish/${encodeURIComponent(SESSION)}`;
+  }
+
+  function startWorker() {
+    worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: "application/javascript" })));
+    worker.onmessage = (e) => {
+      const m = e.data;
+      if (m.type === "ws") {
+        wsReady = m.ready;
+        setDot("dws", m.ready);
+        if (m.ready) setPhase(state); else socketBacklog = 0;
+      } else if (m.type === "sent") {
+        framesSent = m.sent; quality = m.quality; socketBacklog = m.buffered;
+      } else if (m.type === "done") {
+        inflight = Math.max(0, inflight - 1);
+      }
+    };
+    worker.postMessage({ type: "connect", url: socketUrl() });
+  }
+
+  function startFallback() {
+    fbCanvas = document.createElement("canvas");
+    fbCanvas.width = PREVIEW_W; fbCanvas.height = PREVIEW_H;
+    fbCtx = fbCanvas.getContext("2d", { alpha: false });
+    const open = () => {
+      fbSocket = new WebSocket(socketUrl());
+      fbSocket.binaryType = "arraybuffer";
+      fbSocket.onopen = () => { wsReady = true; setDot("dws", true); setPhase(state); };
+      fbSocket.onclose = () => { wsReady = false; setDot("dws", false); setTimeout(open, 1000); };
+      fbSocket.onerror = () => fbSocket.close();
+    };
+    open();
+  }
+
+  function pushFrame() {
+    if (!wsReady || inflight >= MAX_INFLIGHT) return;
+    // Hard stop, not a quality nudge. Without this the backlog grows without
+    // bound on a slow uplink and the viewfinder drifts minutes behind reality.
+    if (socketBacklog > UPLINK_HIGH) {
+      skippedForBacklog++;
+      if (worker) worker.postMessage({ type: "poll" });  // re-read, or we never resume
+      return;
+    }
+
+    if (worker) {
+      inflight++;
+      // resizeWidth is a hint; Safari may ignore it, in which case the worker's
+      // drawImage does the scaling instead. Correct either way.
+      createImageBitmap(video, { resizeWidth: PREVIEW_W, resizeHeight: PREVIEW_H, resizeQuality: "low" })
+        .then((bmp) => worker.postMessage({ type: "frame", bitmap: bmp }, [bmp]))
+        .catch(() => { inflight = Math.max(0, inflight - 1); });
+      return;
+    }
+
+    if (fbSocket.bufferedAmount > UPLINK_HIGH) return;
+    inflight++;
+    fbCtx.drawImage(video, 0, 0, PREVIEW_W, PREVIEW_H);
+    fbCanvas.toBlob((blob) => {
+      inflight = Math.max(0, inflight - 1);
+      if (blob && fbSocket && fbSocket.readyState === 1) { fbSocket.send(blob); framesSent++; }
+    }, "image/jpeg", quality);
   }
 
   function motionScore() {
@@ -177,27 +312,6 @@
     for (let p = 0; p < luma.length; p++) sum += Math.abs(luma[p] - prevLuma[p]);
     prevLuma = luma;
     return sum / luma.length / 255;
-  }
-
-  /**
-   * Three drops guard this, all deliberate -- a viewfinder should shed frames
-   * rather than fall behind:
-   *   1. socket not ready
-   *   2. uplink already backed up (bufferedAmount)
-   *   3. the previous JPEG is still encoding, so callbacks cannot pile up
-   * The Blob goes straight to send(); the old arrayBuffer() hop was a second
-   * async round trip per frame that bought nothing.
-   */
-  function pushPreview() {
-    if (!wsReady || encoding || ws.bufferedAmount > UPLINK_LIMIT) return;
-    encoding = true;
-    pctx.drawImage(video, 0, 0, PREVIEW_W, PREVIEW_H);
-    preview.toBlob((blob) => {
-      encoding = false;
-      if (!blob || !wsReady) return;
-      ws.send(blob);
-      framesSent++;
-    }, "image/jpeg", PREVIEW_Q);
   }
 
   function setHold(fraction, label) {
@@ -217,8 +331,8 @@
    * PNG, not JPEG, and deliberately so. Measured against the registry, JPEG
    * recompression costs 0.01-0.024 of routing score -- enough to push a frame
    * under a tight coverage gate and turn a real inspection into a refusal.
-   * The preview above stays JPEG because it is a throwaway viewfinder; this is
-   * the one frame that gets scored, so it is worth the extra megabytes.
+   * The preview stays JPEG because it is a throwaway viewfinder; this is the
+   * one frame that gets scored, so it is worth the extra megabytes.
    */
   function captureFull() {
     return new Promise((resolve) => {
@@ -298,19 +412,7 @@
     setHold(0, "Move, then hold still again");
   }
 
-  function tick(now) {
-    requestAnimationFrame(tick);
-    if (video.readyState < 2) return;
-
-    if (now - lastPreview >= 1000 / PREVIEW_FPS) {
-      lastPreview = now;
-      pushPreview();
-      if (now - fpsAt > 1000) {
-        el("fps").textContent = `${framesSent - fpsCount} fps`;
-        fpsCount = framesSent; fpsAt = now;
-      }
-    }
-
+  function stepMotion(now) {
     if (now - lastMotion < 1000 / MOTION_HZ) return;
     const dt = now - lastMotion;
     lastMotion = now;
@@ -334,10 +436,41 @@
     }
   }
 
+  function onFrame(now) {
+    if (video.readyState >= 2) {
+      pushFrame();
+      stepMotion(now);
+      if (now - fpsAt > 1000) {
+        // Divide by measured elapsed time: assuming the nominal interval turns
+        // a stall into an inflated number instead of an obviously low one.
+        const fps = Math.round(((framesSent - fpsCount) * 1000) / (now - fpsAt));
+        // Show the skip count when the uplink is the limit, so a stuttering
+        // viewfinder reads as "network", not "broken".
+        el("fps").textContent =
+          `${fps} fps q${quality.toFixed(2)}` + (skippedForBacklog ? ` -${skippedForBacklog}` : "");
+        fpsCount = framesSent; fpsAt = now;
+      }
+    }
+    schedule();
+  }
+
+  // rVFC fires once per decoded camera frame -- the correct clock for this.
+  // rAF is the fallback, and free-runs at display rate rather than camera rate.
+  const hasRVFC = typeof video.requestVideoFrameCallback === "function";
+  function schedule() {
+    if (hasRVFC) video.requestVideoFrameCallback((now) => onFrame(now));
+    else requestAnimationFrame((now) => onFrame(now));
+  }
+
   async function start() {
+    let stream;
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({
-        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } },
+      stream = await navigator.mediaDevices.getUserMedia({
+        video: {
+          facingMode: { ideal: "environment" },
+          width: { ideal: 1280 },
+          frameRate: { ideal: CAMERA_FPS },
+        },
         audio: false,
       });
       video.srcObject = stream;
@@ -350,9 +483,17 @@
           : "This page must be served over HTTPS. Open the cloudflared URL, not the LAN address.";
       return;
     }
+
+    const track = stream.getVideoTracks()[0];
+    const settings = track ? track.getSettings() : {};
+    el("holdlabel").textContent =
+      `Hold still to inspect — camera ${settings.frameRate || "?"}fps` +
+      (workerSupported ? "" : " (main-thread encode)");
+
     try { await navigator.wakeLock.request("screen"); } catch (_) { /* nice-to-have */ }
-    connect();
-    requestAnimationFrame(tick);
+
+    if (workerSupported) startWorker(); else startFallback();
+    schedule();
   }
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {

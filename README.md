@@ -175,7 +175,20 @@ Three things worth knowing:
   would have decided the verdict. Previews stay JPEG because they are throwaway.
 - **Frames are latest-wins; messages are not.** A viewfinder that queues drifts, so a stalled viewer
   drops stale frames. Agent steps and verdicts queue in order, because dropping the step that says
-  *refused* would be a lie. Sustains 60 fps end to end with zero drops.
+  *refused* would be a lie.
+- **Frame rate is camera-bound, not pipeline-bound.** The relay and the projected canvas sustain
+  **120 fps with zero drops** (1872 paints in 15.6s, measured by counting `drawImage` calls), so
+  capture is paced by `requestVideoFrameCallback` — one encode per camera frame, never a duplicate,
+  never a miss. JPEG encoding runs in a worker on an `OffscreenCanvas` that owns the socket, so frame
+  bytes never touch the main thread. Against a 60 Hz source that delivers **59.1 fps with a 50 KB
+  socket backlog**.
+- **Quality adapts; the producer also stops.** Adapting quality alone is not enough — measured, a
+  producer outrunning the socket grew the backlog to **23 MB** with quality pinned at its floor,
+  because 0.62 → 0.28 only halves the bytes. So the worker's `bufferedAmount` is mirrored back to the
+  thread that decides whether to capture, and while saturated the producer polls for a fresh reading
+  (without the poll, the reading goes stale-high and the stream never recovers — it collapsed to
+  1.9 fps). Result: 0.05 MB backlog, zero skips, and quality climbing back to maximum when the uplink
+  allows.
 
 Every registered model is trained on VisA/MVTec studio capture, so a phone photo of a real board will
 usually come back `unroutable`. **That is the coverage gate working**, and cold-start is the answer.
