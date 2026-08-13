@@ -4,16 +4,20 @@ import { imageUrl } from "@/lib/api";
 import type { InspectResult } from "@/lib/types";
 import { OverlayCanvas } from "./OverlayCanvas";
 
-/** Red is attention. A nominal verdict is deliberately colourless. */
-const VERDICT: Record<InspectResult["verdict"], { className: string; label: string }> = {
-  defect: { className: "badge badge-defect", label: "Defect" },
-  nominal: { className: "badge badge-nominal", label: "Nominal" },
-  unroutable: { className: "badge badge-unroutable", label: "Unroutable" },
-};
-
-function VerdictBadge({ verdict }: { verdict: InspectResult["verdict"] }) {
-  const v = VERDICT[verdict];
-  return <span className={v.className}>{v.label}</span>;
+/**
+ * Say which provider actually wrote the sentence.
+ *
+ * This was a hardcoded `=== "openai" ? "OpenAI" : "deterministic fallback"`,
+ * which renders every other provider -- including a real vision model -- as a
+ * canned template. The value is persisted on the finding forever, so the label
+ * has to track it rather than assume a two-provider world.
+ */
+function narrativeAttribution(source: string | null): string {
+  if (!source || source === "none") return "No narrative was generated";
+  if (source === "structured" || source === "fallback") return "Written from the numbers (deterministic)";
+  if (source === "openai") return "Written by OpenAI";
+  if (source.startsWith("vlm:")) return `Described by ${source.slice(4)} (vision model, from the pixels)`;
+  return `Written by ${source}`;
 }
 
 function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
@@ -34,17 +38,6 @@ export function ResultView({ result }: { result: InspectResult }) {
 
   return (
     <section className="stack-lg">
-      <div className="row">
-        <VerdictBadge verdict={result.verdict} />
-        {result.asset_class ? <span className="mono small">{result.asset_class}</span> : null}
-        {result.latency_ms !== null ? (
-          <span className="mono tiny muted">{result.latency_ms} ms end-to-end</span>
-        ) : null}
-        {result.cold_start ? (
-          <span className="badge badge-new">New model minted: {result.cold_start.name}</span>
-        ) : null}
-      </div>
-
       <div className="grid-2">
         <div className="stack">
           <h3 className="caps">Inspected frame</h3>
@@ -90,12 +83,12 @@ export function ResultView({ result }: { result: InspectResult }) {
         <Stat label="Regions" value={String(result.bbox_regions.length)} hint="connected components" />
       </div>
 
-      <div className="panel">
-        <h3 className="panel-hd">Agent narrative</h3>
+      <div className="panel panel-narrative">
+        <h3 className="panel-hd">What the frame shows</h3>
         <div className="stack">
-          <p>{result.narrative}</p>
+          <p className="lede">{result.narrative}</p>
           <p className="mono tiny muted">
-            Written by {result.narrative_source === "openai" ? "OpenAI" : "deterministic fallback"}
+            {narrativeAttribution(result.narrative_source)}
             {result.finding_id ? ` · finding ${result.finding_id}` : ""}
           </p>
         </div>
@@ -110,8 +103,11 @@ export function ResultView({ result }: { result: InspectResult }) {
             {result.decision_source === "openai" ? "OpenAI adjudication" : result.decision_source}
           </p>
           {result.candidates.length > 0 ? (
-            <div className="stack">
-              <div className="table-wrap">
+            <details className="stack">
+              <summary>
+                Every candidate and the gate it had to clear ({result.candidates.length})
+              </summary>
+              <div className="table-wrap" style={{ marginTop: "calc(var(--step) * 2)" }}>
                 <table>
                   <caption className="sr-only">Vector search candidates and their scores</caption>
                   <thead>
@@ -143,7 +139,7 @@ export function ResultView({ result }: { result: InspectResult }) {
                   Runners-up: {runnersUp.map((c) => `${c.name} (${c.score.toFixed(3)})`).join(", ")}
                 </p>
               ) : null}
-            </div>
+            </details>
           ) : null}
         </div>
       </div>

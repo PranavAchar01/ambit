@@ -53,6 +53,22 @@ def scraped_classes(data_root: Path) -> list[str]:
     )
 
 
+def first_probe(data_root: Path, classes: list[str], split: str) -> Path | None:
+    """The first frame in `split` across `classes`, or None if no class has one.
+
+    Tests used to index `classes[0]` and glob directly, which assumes every
+    registered class ships a labelled test split. A normal-only class -- captured
+    on a bench, no defect set -- has neither `test/good` nor `test/defect`, and
+    sorts first alphabetically, so that assumption turned into an IndexError
+    rather than into the skip the test intended.
+    """
+    for cls in classes:
+        found = sorted((data_root / cls / split).glob("*.png"))
+        if found:
+            return found[0]
+    return None
+
+
 @pytest.fixture(scope="session")
 def registry_models() -> list[dict[str, Any]]:
     if not ATLAS:

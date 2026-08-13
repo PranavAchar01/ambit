@@ -41,6 +41,18 @@
   #holdlabel { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a; }
   #holdtrack { margin-top: 8px; height: 6px; background: #111; border: 1px solid #262626; }
   #holdfill { height: 100%; width: 0%; background: #ff2d2d; }
+  /* Stability detection is the primary path, but it needs a steady hand and a
+     steady subject. The shutter is always present so a demo is never hostage to
+     a shaky rig or a venue table someone just leaned on. */
+  #controls { margin-top: 10px; display: flex; gap: 8px; }
+  #controls button {
+    flex: 1 1 0; padding: 14px 10px; background: #111; color: #e8e8e8;
+    border: 1px solid #3a3a3a; border-radius: 0; font: inherit;
+    font-size: 13px; letter-spacing: 0.08em; text-transform: uppercase;
+  }
+  #shutter { background: #ff2d2d; color: #000; border-color: #ff2d2d; }
+  #shutter:disabled { opacity: 0.35; }
+  #autotoggle[aria-pressed="false"] { color: #9a9a9a; border-color: #262626; }
 
   #verdict {
     position: fixed; left: 0; right: 0; bottom: 0;
@@ -84,6 +96,10 @@
 <div id="holdwrap">
   <div id="holdlabel">Hold still to inspect</div>
   <div id="holdtrack"><div id="holdfill"></div></div>
+  <div id="controls">
+    <button type="button" id="shutter">Capture now</button>
+    <button type="button" id="autotoggle" aria-pressed="true">Auto: on</button>
+  </div>
 </div>
 
 <div id="verdict">
@@ -142,6 +158,7 @@
 
   let ws = null, wsReady = false;
   let prevLuma = null, stillMs = 0, state = "idle";
+  let autoCapture = true;
   let lastPreview = 0, lastMotion = 0, encoding = false;
   let framesSent = 0, fpsAt = 0, fpsCount = 0;
 
@@ -323,6 +340,14 @@
       return;
     }
 
+    if (!autoCapture) {
+      // Stability detection off: the shutter is the only trigger. Keep the bar
+      // empty rather than leaving a stale fill from before the toggle.
+      if (stillMs > 0) setHold(0, "Manual capture -- press the button");
+      stillMs = 0;
+      return;
+    }
+
     if (score < STILL_THRESHOLD) {
       stillMs = Math.min(HOLD_MS, stillMs + dt);
       setHold(stillMs / HOLD_MS, `Holding ${(stillMs / 1000).toFixed(1)}s / 2.0s`);
@@ -354,6 +379,26 @@
     connect();
     requestAnimationFrame(tick);
   }
+
+  el("shutter").addEventListener("click", () => {
+    // Fires from any phase except a run already in flight, including cooldown:
+    // waiting for the operator to move the phone before allowing a second shot
+    // is right for automatic capture and wrong for a deliberate press.
+    if (state === "inspecting") return;
+    stillMs = 0;
+    setHold(0, "Capturing");
+    void inspect();
+  });
+
+  el("autotoggle").addEventListener("click", () => {
+    autoCapture = !autoCapture;
+    const btn = el("autotoggle");
+    btn.setAttribute("aria-pressed", autoCapture ? "true" : "false");
+    btn.textContent = autoCapture ? "Auto: on" : "Auto: off";
+    stillMs = 0;
+    setHold(0, autoCapture ? "Hold still to inspect" : "Manual capture -- press the button");
+    if (!autoCapture && state === "cooldown") { state = "idle"; setPhase("idle"); }
+  });
 
   if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
     el("fatal").dataset.show = "true";

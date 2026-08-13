@@ -325,15 +325,17 @@ def fit_fewshot(
     elapsed = time.time() - started
     policy = (
         (
-            f"image_threshold = worst score over {len(out_of_sample)} references scored against a "
-            f"bank fitted without them ({CALIBRATION_FOLDS}-fold); the in-sample maximum was "
+            f"image_threshold = the normal envelope measured out of sample: the worst score over "
+            f"{len(out_of_sample)} references each scored against a bank fitted without it "
+            f"({CALIBRATION_FOLDS}-fold). The in-sample maximum was "
             f"{stats['image_threshold_in_sample']:.4f} and is not a boundary, because PatchCore "
             "retrieves a fitted frame at near-zero distance"
         )
         if out_of_sample
         else (
-            f"image_threshold = max score over the {len(images)} reference images IN SAMPLE -- too "
-            "few references to hold any out. An unseen normal frame is expected to exceed it"
+            f"image_threshold = the normal envelope measured IN SAMPLE: max score over the "
+            f"{len(images)} reference images, too few to hold any out. An unseen normal frame is "
+            "expected to exceed it"
         )
     )
     info: dict[str, Any] = {

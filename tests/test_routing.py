@@ -13,7 +13,7 @@ from typing import Any
 import pytest
 from PIL import Image
 
-from conftest import requires_atlas
+from conftest import first_probe, requires_atlas
 
 MIN_TOP1_ACCURACY = 0.60
 PROBES = 8
@@ -45,8 +45,10 @@ def test_vector_index_is_ready() -> None:
 def test_search_returns_scored_candidates(data_root: Path, registry_models: list[dict[str, Any]]) -> None:
     from gridsight.db.mongo import vector_search
 
-    cls = registry_models[0]["asset_class"]
-    probe = sorted((data_root / cls / "test" / "good").glob("*.png"))[0]
+    classes = [str(m["asset_class"]) for m in registry_models]
+    probe = first_probe(data_root, classes, "test/good")
+    if probe is None:
+        pytest.skip("no registered class has a test/good split on disk")
     hits = vector_search(_embed(probe), k=5)
 
     assert hits, "$vectorSearch returned nothing"

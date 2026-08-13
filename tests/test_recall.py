@@ -16,7 +16,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
-from conftest import requires_atlas
+from conftest import first_probe, requires_atlas
 
 
 def _embed(path: Path) -> list[float]:
@@ -121,7 +121,7 @@ def test_recall_returns_findings_not_models(data_root: Path, scraped_classes: li
     """The projections differ; a mis-targeted index would return model documents."""
     from gridsight.db.mongo import finding_recall_index, vector_search
 
-    probes = sorted((data_root / scraped_classes[0] / "test" / "defect").glob("*.png"))
+    probes = [p for p in [first_probe(data_root, scraped_classes, "test/defect")] if p]
     if not probes:
         pytest.skip("no probe image")
 
@@ -140,8 +140,10 @@ def test_recall_honours_the_verdict_filter(data_root: Path, scraped_classes: lis
     if findings_col().count_documents({"verdict": "defect", "embedding": {"$ne": []}}) < 2:
         pytest.skip("not enough embedded defect findings")
 
-    probes = sorted((data_root / scraped_classes[0] / "test" / "defect").glob("*.png"))
-    hits = vector_search(_embed(probes[0]), k=5, index=finding_recall_index(), filters={"verdict": "defect"})
+    probe = first_probe(data_root, scraped_classes, "test/defect")
+    if probe is None:
+        pytest.skip("no class has a test/defect split on disk")
+    hits = vector_search(_embed(probe), k=5, index=finding_recall_index(), filters={"verdict": "defect"})
     assert hits, "filtered recall returned nothing"
     assert {h["verdict"] for h in hits} == {"defect"}
 
@@ -151,7 +153,7 @@ def test_brute_force_fallback_agrees_with_the_index(data_root: Path, scraped_cla
     """The degraded path must rank the same way, or an outage changes the answers."""
     from gridsight.db.mongo import _brute_force_cosine, finding_recall_index, vector_search
 
-    probes = sorted((data_root / scraped_classes[0] / "test" / "defect").glob("*.png"))
+    probes = [p for p in [first_probe(data_root, scraped_classes, "test/defect")] if p]
     if not probes:
         pytest.skip("no probe image")
     vector = _embed(probes[0])

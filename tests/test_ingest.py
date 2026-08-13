@@ -14,10 +14,30 @@ from gridsight.ingest.hf_scrape import (
 )
 
 
+def is_normal_only(data_root: Path, cls: str) -> bool:
+    """A class captured locally, with no labelled defect set.
+
+    Split out rather than relaxing the corpus minimums: a downloaded corpus that
+    arrives short of 20 train/good or 5 test/defect is a broken ingest and must
+    still fail. A bench capture has no defect frames by construction, which is
+    the state of the beachhead ICP and not a fault -- so it carries its own,
+    stricter-where-it-can-be invariant below.
+    """
+    return not any((data_root / cls / "test" / "defect").glob("*.png"))
+
+
 def test_every_class_meets_training_minimums(data_root: Path, scraped_classes: list[str]) -> None:
     assert len(scraped_classes) >= 5, f"need >=5 asset classes, found {scraped_classes}"
     for cls in scraped_classes:
         counts = class_counts(data_root / cls)
+        if is_normal_only(data_root, cls):
+            # Enough frames to fit a bank and still hold folds out for the
+            # threshold, plus withheld frames that were never trained on.
+            assert counts["train_good"] >= 8, f"{cls}: {counts['train_good']} train/good"
+            assert counts["test_good"] == 0, f"{cls}: normal-only classes keep no test/good split"
+            held = list((data_root / cls / "heldout").glob("*.png"))
+            assert held, f"{cls}: normal-only class with no held-out frames to validate against"
+            continue
         assert counts["train_good"] >= 20, f"{cls}: {counts['train_good']} train/good"
         assert counts["test_defect"] >= 5, f"{cls}: {counts['test_defect']} test/defect"
 
@@ -47,7 +67,7 @@ def test_scale_split_bounds_do_not_overlap() -> None:
 
 
 @requires_atlas
-def test_provenance_recorded_for_every_class(scraped_classes: list[str]) -> None:
+def test_provenance_recorded_for_every_class(data_root: Path, scraped_classes: list[str]) -> None:
     from gridsight.db.mongo import datasets_col
 
     recorded = {d["_id"]: d for d in datasets_col().find()}
@@ -56,4 +76,24 @@ def test_provenance_recorded_for_every_class(scraped_classes: list[str]) -> None
         row = recorded[cls]
         assert row["dataset_id"], f"{cls} has no source dataset id"
         assert row["rationale"], f"{cls} has no selection rationale"
-        assert row["sample_counts"]["train_good"] >= 20
+        assert row["license"], f"{cls} has no licence recorded"
+        minimum = 8 if is_normal_only(data_root, cls) else 20
+        assert row["sample_counts"]["train_good"] >= minimum
+
+
+@requires_atlas
+def test_locally_captured_classes_record_their_split_by_filename(
+    data_root: Path, scraped_classes: list[str]
+) -> None:
+    """A held-out frame is only evidence if it can be shown it was never trained on."""
+    from gridsight.db.mongo import datasets_col
+
+    recorded = {d["_id"]: d for d in datasets_col().find()}
+    local = [c for c in scraped_classes if is_normal_only(data_root, c)]
+    for cls in local:
+        split = recorded[cls].get("split_by_filename")
+        assert split, f"{cls}: no split recorded by filename"
+        assert split["held_out"], f"{cls}: no held-out frames recorded"
+        overlap = set(split["train_good"]) & set(split["held_out"])
+        assert not overlap, f"{cls}: {sorted(overlap)} are both trained on and held out"
+        assert len(split["held_out"]) == len(list((data_root / cls / "heldout").glob("*.png")))
