@@ -421,6 +421,17 @@ that re-infers on every question does not have a memory; it has a habit.
 
 - **6 of 125 in-registry frames are refused.** The gate buys 25/25 abstention at that cost. Stated
   above rather than buried, because it is the real trade.
+- **`visa_pcb1` and `visa_pcb2` still flag good boards, and no threshold fixes it.** At each model's
+  own optimum (max TPR−FPR over held-out frames) they call 6 of 30 known-good boards defective,
+  because their good and defect score distributions genuinely overlap — image AUROC 0.8967 and
+  0.8600. `mvtec_transistor` reaches 0/30 and `mvtec_cable` 1/30 on the same measurement, so this is
+  a property of those two models rather than of the pipeline. More or better training data is the
+  fix; a tuned constant would only hide it.
+- **Region boxes are localisation, not detection.** They are suppressed entirely when the verdict is
+  nominal, and each must peak at ≥0.70× the strongest region in its own frame. Measured against
+  ground-truth masks that took region precision from 20.2% → 55.0% on `visa_pcb1` and 35.6% → 72.9%
+  on `mvtec_cable`, costing 7.5pp and 2.5pp of localisation recall. Across 120 known-good frames in
+  four classes, boxes drawn fell to 20 and 110 frames come back completely clean.
 - **The registry is studio imagery.** VisA and MVTec are captured in fixed rigs. A phone photo of a
   real board under bench lighting will usually be refused — correct behaviour, but it means the
   live-capture demo needs a cold-start first.
