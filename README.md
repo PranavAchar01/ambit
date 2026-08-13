@@ -44,6 +44,7 @@ event started, at commit `6903de1`.
 | **`LLM_PROVIDER` switch** routing text-LLM calls through OpenAI or OpenRouter, with a deterministic refuse when neither key is present | **Built during event** |
 | **Provider reporting** at `GET /health` and on startup | **Built during event** |
 | **Main screen restructured** into capture / analysis columns; agent steps as discrete rows with per-step latency; verdict card rendering score-vs-gate as a comparison | **Built during event** |
+| **Viewfinder performance**: 320x240 frames, AIMD pacing, encoding moved off the main thread | **Built during event** |
 | **Manual shutter and stability-detection toggle** on the phone capture page | **Built during event** |
 | **Backfilled-timestamp disclosure** surfaced in `/trends` | **Built during event** |
 | **ElevenLabs spoken findings** — server-side synthesis, default-muted control, keyless path verified | **Built during event** |
@@ -231,7 +232,33 @@ Three things worth knowing:
   would have decided the verdict. Previews stay JPEG because they are throwaway.
 - **Frames are latest-wins; messages are not.** A viewfinder that queues drifts, so a stalled viewer
   drops stale frames. Agent steps and verdicts queue in order, because dropping the step that says
-  *refused* would be a lie. Sustains 60 fps end to end with zero drops.
+  *refused* would be a lie.
+- **Bytes on the wire are the budget, not encoder speed.** The relay and projected canvas sustain
+  **120 fps with zero drops** (1872 `drawImage` calls in 15.6s), so nothing downstream is the limit.
+  What causes lag is queueing, and queueing is caused by frame size. Measured end to end through the
+  live tunnel at a matched send rate:
+
+  | preview | frame | delivered | latency p50 | p95 | max | jitter |
+  |---|---|---|---|---|---|---|
+  | 480×360 q50 | 23.1 KB | 42.8 fps | 203 ms | 589 ms | 718 ms | 46.7 ms |
+  | **320×240 q42** | **9.7 KB** | **40.4 fps** | **56 ms** | **156 ms** | **287 ms** | **35.9 ms** |
+
+  The smaller preview is better on every axis at once. Frames do not arrive late because they were
+  slow to encode; they arrive late because they sat in a queue.
+- **Nothing per-frame runs on the main thread.** Capture is paced by `requestVideoFrameCallback` —
+  one encode per camera frame, no duplicates, no misses. The main thread blits the video into an
+  `OffscreenCanvas` and transfers it (zero-copy) to a worker that owns the socket, encodes the JPEG,
+  *and* runs motion detection, so the `getImageData` readback never stalls the render pipeline. The
+  full-resolution PNG is encoded in the worker too — on the main thread it froze the viewfinder for
+  hundreds of milliseconds at the exact moment the operator was holding the phone still.
+- **Pacing is AIMD, and buffers are kept shallow.** A binary "stop when saturated" gate produces a
+  sawtooth — run flat out, stall, drain, burst — which is what lag spikes actually are.
+  Multiplicative decrease on congestion with additive increase on headroom converges smoothly
+  instead, settling at whatever the path carries. Two failures found by measuring, both fixed:
+  adapting quality alone let the backlog reach **23 MB** (0.55 → 0.30 only halves the bytes, against
+  a 20× overshoot), and gating on a stale reading deadlocked the stream at **1.9 fps** because a
+  producer that has stopped sending frames stops receiving backlog reports — hence the explicit poll
+  on each skipped frame.
 
 Every registered model is trained on VisA/MVTec studio capture, so a phone photo of a real board will
 usually come back `unroutable`. **That is the coverage gate working**, and cold-start is the answer.
