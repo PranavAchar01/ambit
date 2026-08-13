@@ -1,4 +1,4 @@
-"""Central configuration for GridSight, loaded from the environment.
+"""Central configuration for Ambit, loaded from the environment.
 
 Secrets never live in source. `.env` is git-ignored and read at import time.
 """
@@ -19,7 +19,7 @@ DATA_ROOT = REPO_ROOT / "data"
 HF_CACHE = DATA_ROOT / ".hf_cache"
 ARTIFACT_ROOT = REPO_ROOT / "artifacts"
 
-#: Asset classes GridSight tries to populate from the Hugging Face Hub.
+#: Asset classes Ambit tries to populate from the Hugging Face Hub.
 ASSET_CLASSES: tuple[str, ...] = (
     "insulator",
     "corrosion",

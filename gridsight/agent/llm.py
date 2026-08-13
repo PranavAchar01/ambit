@@ -46,11 +46,12 @@ class RouteAdjudication(BaseModel):
 class ModelName(BaseModel):
     """Name for a freshly minted cold-start specialist."""
 
-    name: str = Field(description="Lowercase kebab-case registry name, e.g. 'rail-surface-patchcore-v1'.")
-    asset_class: str = Field(description="Lowercase snake_case asset class, e.g. 'rail_surface'.")
+    name: str = Field(description="Lowercase kebab-case registry name, e.g. 'esp32-devkit-patchcore-v1'.")
+    asset_class: str = Field(description="Lowercase snake_case asset class, e.g. 'esp32_devkit'.")
 
 
-ADJUDICATE_SYSTEM = """You route drone inspection frames to specialist anomaly-detection models.
+ADJUDICATE_SYSTEM = """You route electronics inspection frames -- PCBs, dev boards, discrete
+components -- to specialist anomaly-detection models.
 You are given the top candidates from a vector search over a model registry; each candidate was
 trained on imagery of one asset class, and the score is the cosine similarity between the incoming
 frame and that model's training-set centroid.
@@ -62,10 +63,11 @@ Routing a frame to a model trained on a different asset class produces a confide
 which is worse than refusing. Prefer cold-starting a new model unless a candidate plausibly covers
 the same physical component. Set should_cold_start=true when you refuse."""
 
-NARRATE_SYSTEM = """You write terse inspection findings for utility and rail asset managers.
+NARRATE_SYSTEM = """You write terse inspection findings for electronics manufacturing engineers.
 Given the routed model, the anomaly score relative to its decision threshold, and the located
-regions, write 2-4 sentences: what asset this is, whether a defect is present and where, how severe,
-and the recommended action. Be concrete and factual. Do not invent details that are not in the data.
+regions, write 2-4 sentences: what board or component this is, whether a defect is present and
+where, how severe, and the recommended action. Be concrete and factual. Do not invent details that
+are not in the data.
 If the verdict is nominal, say so plainly and recommend no action."""
 
 
@@ -142,7 +144,7 @@ def name_new_model(asset_class_hint: str | None, n_references: int, backbone: st
                 {
                     "role": "system",
                     "content": "You name entries in a machine-vision model registry for "
-                    "infrastructure inspection. Names are lowercase kebab-case and end in a version.",
+                    "electronics inspection. Names are lowercase kebab-case and end in a version.",
                 },
                 {
                     "role": "user",
@@ -171,7 +173,7 @@ def _fallback_narrative(context: dict[str, Any]) -> str:
             f"No model in the registry covers this asset class. The closest match was "
             f"{context.get('top_candidate') or 'none'} at a routing score of "
             f"{context.get('routing_score', 0.0):.3f}, below the {context.get('threshold', 0.0):.2f} "
-            "floor. GridSight is refusing to score this frame rather than applying a specialist "
+            "floor. Ambit is refusing to score this frame rather than applying a specialist "
             "trained on different hardware. Supply a handful of known-good reference images to "
             "cold-start a specialist for it."
         )
@@ -207,7 +209,7 @@ def narrate_finding(context: dict[str, Any]) -> tuple[str, str]:
             "The vector router found no registry model covering this frame's asset class. "
             f"Best candidate: {context.get('top_candidate') or 'none'} at routing score "
             f"{context.get('routing_score', 0.0):.3f}, against a floor of "
-            f"{context.get('threshold', 0.0):.2f}. Explain to the operator that GridSight is "
+            f"{context.get('threshold', 0.0):.2f}. Explain to the operator that Ambit is "
             "refusing to score rather than guessing, and what they should do next."
         )
     else:

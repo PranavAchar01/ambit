@@ -1,4 +1,4 @@
-"""Phase 5 -- the GridSight inference/agent service."""
+"""Phase 5 -- the Ambit inference/agent service."""
 
 from __future__ import annotations
 
@@ -55,9 +55,9 @@ log = logging.getLogger("gridsight.api")
 MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 app = FastAPI(
-    title="GridSight",
+    title="Ambit",
     version="1.0.0",
-    description="Vector-routed machine-vision model registry for infrastructure inspection",
+    description="Vector-routed machine-vision model registry for electronics inspection",
 )
 app.add_middleware(
     CORSMiddleware,
@@ -78,7 +78,7 @@ def _startup() -> None:
             status,
         )
     log.info(
-        "GridSight API up | vector index %s | %d models registered", status, models_col().count_documents({})
+        "Ambit API up | vector index %s | %d models registered", status, models_col().count_documents({})
     )
 
 
@@ -188,7 +188,7 @@ async def inspect(
     image: UploadFile = File(...),
     asset_class: str | None = Form(None),
 ) -> JSONResponse:
-    """Run the routing agent on a drone frame."""
+    """Run the routing agent on an inspection frame."""
     frame = await _read_image(image)
     image_id = store_pil(frame, image.filename or "frame.png", kind="upload")
     thread_id = f"inspect-{uuid.uuid4().hex[:12]}"

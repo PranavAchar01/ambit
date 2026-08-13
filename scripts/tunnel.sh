@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Expose the GridSight API over HTTPS so a phone can reach /capture.
+# Expose the Ambit API over HTTPS so a phone can reach /capture.
 #
 # One tunnel is enough: the capture page, the relay WebSocket and the /inspect
 # upload are all served by the API on the same origin, so there is no CORS to
@@ -21,14 +21,14 @@ command -v cloudflared >/dev/null || { echo "cloudflared not found: brew install
 
 # Bind to loopback IPv4 explicitly. "localhost" resolves to ::1 first on macOS,
 # and anything else holding [::]:PORT -- a stray Docker container, say -- would
-# silently be the thing published to a public URL instead of GridSight.
+# silently be the thing published to a public URL instead of Ambit.
 HOST="127.0.0.1"
 TARGET="http://$HOST:$PORT"
 
 # A bare 200 on /health proves nothing: plenty of services answer {"status":"ok"}.
-# Check for a field only GridSight serves before exposing this to the internet.
+# Check for a field only Ambit serves before exposing this to the internet.
 if ! curl -sf -m 5 "$TARGET/health" | grep -q '"vector_index"'; then
-  echo "Refusing to tunnel: $TARGET is not the GridSight API."
+  echo "Refusing to tunnel: $TARGET is not the Ambit API."
   echo "Start it first:  .venv/bin/python -m uvicorn gridsight.api.main:app --host $HOST --port $PORT"
   echo "If something else owns port $PORT, pass a free one:  scripts/tunnel.sh 8010"
   exit 1

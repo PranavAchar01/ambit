@@ -51,7 +51,7 @@ export default function InspectPage() {
   return (
     <div className="stack-lg">
       <header className="stack">
-        <h1>Inspect a drone frame</h1>
+        <h1>Inspect a board</h1>
         <p className="lede small">
           The agent embeds the frame with OpenCLIP, vector-searches the MongoDB model registry for
           the specialist trained on the most similar imagery, and runs it. If nothing clears that

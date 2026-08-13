@@ -94,7 +94,7 @@ def _resolve_pixel_threshold(stored: float, amap: np.ndarray) -> tuple[float, bo
     """Fall back to the frame's own distribution if the stored threshold is unusable.
 
     Anomalib leaves `_pixel_threshold` as NaN when the validation split had no
-    ground-truth masks. Models registered by GridSight calibrate it at training
+    ground-truth masks. Models registered by Ambit calibrate it at training
     time; this guard exists so a stale or externally-produced model degrades to a
     visible, logged approximation instead of an all-NaN heatmap.
     """

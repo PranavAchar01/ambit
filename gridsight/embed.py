@@ -1,7 +1,7 @@
 """OpenCLIP image embeddings -- the 512-d vectors that route a frame to a model.
 
 Deliberately local and image-native. OpenAI's embedding endpoints are text-only
-and cannot embed a drone frame, so they play no part in routing.
+and cannot embed an inspection frame, so they play no part in routing.
 """
 
 from __future__ import annotations

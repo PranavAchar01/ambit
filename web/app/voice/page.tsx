@@ -1,7 +1,7 @@
 import { VoiceConsole } from "@/components/VoiceConsole";
 
 export const metadata = {
-  title: "Voice — GridSight",
+  title: "Voice — Ambit",
   description:
     "Ask the fleet a question out loud. Every answer is read out of MongoDB by a server-side tool, never from the model's priors.",
 };

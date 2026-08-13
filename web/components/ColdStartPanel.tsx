@@ -40,7 +40,7 @@ export function ColdStartPanel({ frame, suggestedClass, onComplete }: Props) {
       <div>
         <h2>No model in the registry covers this asset</h2>
         <p className="small muted" style={{ marginTop: "6px" }}>
-          GridSight will not score this frame with a specialist trained on different hardware — that
+          Ambit will not score this frame with a specialist trained on different hardware — that
           produces a confident, wrong answer. Upload a handful of <strong>known-good</strong> images of
           this asset and it will fit a new specialist, register it, and re-run this frame against it.
         </p>
@@ -52,7 +52,7 @@ export function ColdStartPanel({ frame, suggestedClass, onComplete }: Props) {
           type="text"
           value={assetClass}
           onChange={(e) => setAssetClass(e.target.value)}
-          placeholder="e.g. rail_surface"
+          placeholder="e.g. esp32_devkit"
           className="input"
         />
       </label>

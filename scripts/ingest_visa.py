@@ -1,6 +1,6 @@
 """Ingest the electronics registry: VisA's four PCB classes plus MVTec `cable`.
 
-GridSight has been rescoped to electronics inspection -- semiconductors, PCBs and
+Ambit has been rescoped to electronics inspection -- semiconductors, PCBs and
 dev boards -- so the registry needs classes that are genuinely printed-circuit
 imagery rather than general objects. Two things drive the source choice:
 
@@ -64,7 +64,7 @@ MVTEC_DATASET = "TheoM55/mvtec_all_objects_split"
 MVTEC_LICENSE = "CC BY-NC-SA 4.0"
 MVTEC_LICENSE_RESTRICTION = (
     "NON-COMMERCIAL. ShareAlike propagates to derived weights. Fine for research, "
-    "internal evaluation and this demo; not fine for shipping GridSight commercially "
+    "internal evaluation and this demo; not fine for shipping Ambit commercially "
     "with MVTec-derived specialists baked in. Contrast with the VisA PCB classes, "
     "which are CC BY 4.0 and carry no such restriction."
 )
@@ -157,7 +157,7 @@ SPECS: tuple[ParquetCategorySpec, ...] = (
 
 def main() -> int:
     parser = argparse.ArgumentParser(
-        description="Ingest the VisA PCB classes and MVTec cable into the GridSight corpus"
+        description="Ingest the VisA PCB classes and MVTec cable into the Ambit corpus"
     )
     parser.add_argument("--classes", nargs="*", help="restrict to these asset classes")
     parser.add_argument("--force", action="store_true", help="re-extract even if a class is populated")

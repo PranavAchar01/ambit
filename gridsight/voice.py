@@ -51,7 +51,7 @@ CLIENT_SECRET_TTL_S = 600
 
 MAX_ROWS = 25
 
-VOICE_INSTRUCTIONS = """You are GridSight's fleet analyst. You speak to inspection operators about a \
+VOICE_INSTRUCTIONS = """You are Ambit's fleet analyst. You speak to inspection operators about a \
 fleet of anomaly-detection specialists and the frames they have inspected.
 
 Hard rule: every factual claim you make about the fleet must come from a tool call. You have no prior \
@@ -61,7 +61,7 @@ estimate, never fill a gap from memory. If the operator asks something no tool c
 How the system works, so you can explain it: each registered model carries a 512-dimension CLIP \
 centroid of its own training imagery, and a routing_threshold coverage gate set at the 5th percentile \
 of its training set's self-similarity. An incoming frame is embedded and vector-searched against those \
-centroids. If the best score is below the winner's gate, GridSight records verdict "unroutable" and \
+centroids. If the best score is below the winner's gate, Ambit records verdict "unroutable" and \
 refuses to score rather than applying a specialist trained on different hardware. Refusal is a feature.
 
 Tool routing: fleet-wide rates and what is degrading -> query_trends. Specific past inspections -> \
@@ -302,7 +302,7 @@ def registry_status() -> dict[str, Any]:
 
 
 def explain_refusal(finding_id: str | None = None) -> dict[str, Any]:
-    """Metacognitive memory: why did GridSight decline to score a frame?
+    """Metacognitive memory: why did Ambit decline to score a frame?
 
     Reads back the candidate list and per-model coverage gate that were persisted
     at decision time, so the explanation is the recorded decision rather than a
@@ -431,7 +431,7 @@ TOOLS: tuple[VoiceTool, ...] = (
                 "verdict": {
                     "type": "string",
                     "enum": ["nominal", "defect", "unroutable"],
-                    "description": "Optional verdict filter. 'unroutable' means GridSight refused.",
+                    "description": "Optional verdict filter. 'unroutable' means Ambit refused.",
                 },
                 "since": {
                     "type": "string",
@@ -484,7 +484,7 @@ TOOLS: tuple[VoiceTool, ...] = (
             "Describe the model registry itself: how many specialists are registered, which asset "
             "classes they cover, each one's training-set size, coverage gate (routing_threshold) and "
             "measured image/pixel AUROC, whether it was seeded or cold-started by the agent, and the "
-            "READY status of both Atlas vector indexes. Use for 'what can GridSight inspect', 'which "
+            "READY status of both Atlas vector indexes. Use for 'what can Ambit inspect', 'which "
             "models did we cold-start', 'is the index healthy'."
         ),
         parameters=_obj({}),
@@ -493,7 +493,7 @@ TOOLS: tuple[VoiceTool, ...] = (
     VoiceTool(
         name="explain_refusal",
         description=(
-            "Explain why GridSight refused to score a frame, from the candidate list and per-model "
+            "Explain why Ambit refused to score a frame, from the candidate list and per-model "
             "coverage gates recorded at decision time: every candidate's routing score, its gate, and "
             "how far short it fell. Omit finding_id to explain the most recent refusal."
         ),

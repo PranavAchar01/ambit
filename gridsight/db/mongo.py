@@ -104,7 +104,7 @@ def ensure_collections() -> None:
 class VectorIndex:
     """A named Atlas vector index over one collection.
 
-    GridSight runs two of these and they must not diverge: `models.embedding`
+    Ambit runs two of these and they must not diverge: `models.embedding`
     answers "which specialist is competent here?" and `findings.embedding`
     answers "have we seen this before?". Same maths, different memory.
     """

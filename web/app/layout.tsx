@@ -3,7 +3,7 @@ import Link from "next/link";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "GridSight — a registry of inspection competence",
+  title: "Ambit — a registry of inspection competence",
   description:
     "A registry of anomaly-detection specialists on MongoDB Atlas. It knows what it can inspect, and refuses what it cannot.",
 };
@@ -27,7 +27,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
           <div className="shell">
             <div className="masthead-inner">
               <Link href="/" className="wordmark">
-                GridSight
+                Ambit
               </Link>
               <nav className="nav" aria-label="Primary">
                 {NAV.map((item) => (

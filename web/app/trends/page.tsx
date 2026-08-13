@@ -49,7 +49,7 @@ export default function TrendsPage() {
         <div className="stack">
           <h1>Fleet health</h1>
           <p className="lede small">
-            Aggregated by MongoDB over every finding GridSight has written.
+            Aggregated by MongoDB over every finding Ambit has written.
           </p>
         </div>
         <label className="row">

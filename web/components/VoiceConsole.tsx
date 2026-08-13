@@ -37,9 +37,9 @@ interface ToolEvent {
 }
 
 const SUGGESTIONS = [
-  "What can GridSight inspect right now?",
+  "What can Ambit inspect right now?",
   "Which asset class is failing fastest this month?",
-  "Why did GridSight refuse the last frame it could not route?",
+  "Why did Ambit refuse the last frame it could not route?",
   "Take the most recent insulator defect — have we seen it before?",
 ];
 
@@ -298,7 +298,7 @@ export function VoiceConsole() {
                     className="caps"
                     style={{ color: u.role === "operator" ? "var(--fg-faint)" : "var(--fg)" }}
                   >
-                    {u.role === "operator" ? "Operator" : "GridSight"}
+                    {u.role === "operator" ? "Operator" : "Ambit"}
                   </span>
                   <p className="small" style={{ wordBreak: "break-word" }}>
                     {u.text}

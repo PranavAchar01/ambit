@@ -1,7 +1,7 @@
 [project]
 name = "gridsight"
 version = "0.1.0"
-description = "Vector-routed machine-vision model registry for infrastructure inspection"
+description = "Vector-routed machine-vision model registry for electronics inspection"
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [

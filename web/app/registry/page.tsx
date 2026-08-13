@@ -39,7 +39,7 @@ export default function RegistryPage() {
         <div className="stack">
           <h1>Model registry</h1>
           <p className="lede small">
-            Every specialist GridSight can route to. Weights live in GridFS; the 512-d embedding is
+            Every specialist Ambit can route to. Weights live in GridFS; the 512-d embedding is
             the centroid of what each model was trained on, and the gate is the coverage envelope it
             will accept a frame inside.
           </p>

@@ -1,7 +1,7 @@
 """Programmatic Hugging Face Hub sweep for electronics inspection imagery.
 
 Search-only. Writes nothing to the registry or to data/. Used to source
-candidate classes (dev boards, semiconductors, PCB/solder) for GridSight.
+candidate classes (dev boards, semiconductors, PCB/solder) for Ambit.
 """
 
 from __future__ import annotations

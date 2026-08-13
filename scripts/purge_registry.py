@@ -1,6 +1,6 @@
 """Narrow the registry to electronics inspection only.
 
-GridSight began on powerline assets and picked up MVTec's general object set on
+Ambit began on powerline assets and picked up MVTec's general object set on
 the way. The product is now scoped to semiconductors, PCBs and dev boards, so
 every specialist outside that scope is removed -- registry document, GridFS
 weights, GridFS reference image, and the findings that pointed at it.

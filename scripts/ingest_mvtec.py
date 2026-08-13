@@ -50,7 +50,7 @@ DATASET_ID = "foersben/mvtec-ad"
 LICENSE = "CC BY-NC-SA 4.0"
 LICENSE_RESTRICTION = (
     "NON-COMMERCIAL. ShareAlike propagates to derived weights. Fine for research, "
-    "internal evaluation and this demo; not fine for shipping GridSight commercially "
+    "internal evaluation and this demo; not fine for shipping Ambit commercially "
     "with MVTec-derived specialists baked in."
 )
 
@@ -92,7 +92,7 @@ SPECS: tuple[FolderCategorySpec, ...] = tuple(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="Ingest MVTec AD categories into the GridSight corpus")
+    parser = argparse.ArgumentParser(description="Ingest MVTec AD categories into the Ambit corpus")
     parser.add_argument("--categories", nargs="*", help="restrict to these MVTec categories")
     parser.add_argument("--force", action="store_true", help="re-extract even if a class is populated")
     args = parser.parse_args()

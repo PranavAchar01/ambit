@@ -6,7 +6,7 @@ real $vectorSearch, scored by the real specialist that won. Nothing is invented.
 `--spread-days` only moves the *timestamp* so a fleet's inspection history spans
 more than the minute this script runs in. Findings written that way carry
 `backfilled: true` and their original wall-clock time, so a backfilled timeline is
-never mistaken for one GridSight actually observed over time.
+never mistaken for one Ambit actually observed over time.
 """
 
 from __future__ import annotations
