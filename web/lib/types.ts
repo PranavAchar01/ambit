@@ -18,6 +18,48 @@ export interface Candidate {
   metrics: ModelMetrics;
 }
 
+export interface LayoutModel {
+  model_id: string;
+  name: string;
+  asset_class: string;
+  /** illustrative ordering only -- encodes neighbourhood, not distance */
+  angle: number;
+  gate: number;
+  created_by: string | null;
+  image_auroc: number | null;
+  reference_image_url: string | null;
+}
+
+export interface RegistryLayout {
+  route_threshold: number;
+  angle_is_illustrative: boolean;
+  models: LayoutModel[];
+}
+
+export interface RecallMatch {
+  id: string;
+  timestamp: string;
+  asset_class: string | null;
+  verdict: Verdict;
+  severity: number;
+  similarity: number;
+  routed_model_name: string | null;
+  agent_narrative: string;
+  uploaded_image_url: string | null;
+  heatmap_url: string | null;
+}
+
+export interface RecallResponse {
+  index: { name: string; status: string | null };
+  count: number;
+  recurrence: {
+    similar_defects: number;
+    first_seen: string | null;
+    last_seen: string | null;
+  };
+  matches: RecallMatch[];
+}
+
 export interface ModelMetrics {
   image_auroc: number | null;
   pixel_auroc: number | null;

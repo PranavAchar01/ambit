@@ -14,6 +14,11 @@ Output is an Anomalib-compatible tree per class::
 Nothing here is generated. Every pixel written to disk came out of a real Hub
 dataset; the only transforms applied are cropping to a labelled region, resizing
 the longest edge to 512px, and perceptual-hash deduplication.
+
+This module owns the *bounding-box* half of ingestion. The corpus-agnostic half
+-- dedupe, resize, cap, write the Anomalib tree -- lives in
+`gridsight.ingest.corpus` and is shared with the folder-structured adapter in
+`gridsight.ingest.folder_corpus`.
 """
 
 from __future__ import annotations
@@ -35,12 +40,41 @@ from PIL import Image
 
 from gridsight.config import DATA_ROOT, HF_CACHE, get_settings
 from gridsight.db.mongo import datasets_col, ensure_collections
+from gridsight.ingest.corpus import (
+    MAX_EDGE,
+    PHASH_DISTANCE,
+    TEST_DEFECT_CAP,
+    TEST_GOOD_CAP,
+    TRAIN_FRACTION,
+    TRAIN_GOOD_CAP,
+    class_counts,
+    dedupe,
+    is_populated,
+    resize_max_edge,
+    write_split,
+)
+
+#: Re-exported so the powerline corpus keeps a single import surface for both
+#: halves of ingestion; callers and tests import them from here.
+__all__ = [
+    "MAX_EDGE",
+    "PHASH_DISTANCE",
+    "SOURCES",
+    "SourceSpec",
+    "box_side",
+    "class_counts",
+    "dedupe",
+    "discover_candidates",
+    "ingest_class",
+    "is_populated",
+    "main",
+    "resize_max_edge",
+    "write_split",
+]
 
 log = logging.getLogger("gridsight.ingest")
 
-MAX_EDGE = 512
 UPSCALE_TO = 160  # small crops are upscaled rather than padded with background
-PHASH_DISTANCE = 4  # <= this hamming distance counts as a duplicate
 
 # Crops are taken tight to the labelled box. An earlier policy padded every box
 # with 25% context and inflated anything under 96px, which made a 20px insulator
@@ -56,11 +90,6 @@ CTX_MARGIN = 0.0
 TOWER_MIN_SIDE = 180.0
 COMPONENT_MAX_SIDE = 160.0
 CONDUCTOR_MAX_SIDE = 200.0
-
-TRAIN_GOOD_CAP = 120
-TEST_GOOD_CAP = 30
-TEST_DEFECT_CAP = 40
-TRAIN_FRACTION = 0.8
 
 #: Search terms issued against the Hub. Kept verbatim from the asset taxonomy so
 #: the discovery log shows exactly what was asked for.
@@ -411,52 +440,6 @@ REJECTED: tuple[dict[str, str], ...] = (
         "reason": "Corrosion boxes only -- every frame is anomalous, no clean-metal normal set.",
     },
 )
-
-
-# ---------------------------------------------------------------------------
-# Image processing
-# ---------------------------------------------------------------------------
-
-
-def resize_max_edge(img: Image.Image, max_edge: int = MAX_EDGE) -> Image.Image:
-    w, h = img.size
-    longest = max(w, h)
-    if longest <= max_edge:
-        return img
-    scale = max_edge / longest
-    return img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.LANCZOS)
-
-
-def dedupe(images: list[Image.Image], seen: list[imagehash.ImageHash]) -> list[Image.Image]:
-    """Drop perceptual near-duplicates, both within the batch and against `seen`."""
-    kept: list[Image.Image] = []
-    for img in images:
-        h = imagehash.phash(img)
-        if any((h - prior) <= PHASH_DISTANCE for prior in seen):
-            continue
-        seen.append(h)
-        kept.append(img)
-    return kept
-
-
-def write_split(images: list[Image.Image], target: Path) -> int:
-    target.mkdir(parents=True, exist_ok=True)
-    for i, img in enumerate(images):
-        resize_max_edge(img).save(target / f"{i:05d}.png", format="PNG", optimize=True)
-    return len(images)
-
-
-def class_counts(class_dir: Path) -> dict[str, int]:
-    return {
-        "train_good": len(list((class_dir / "train" / "good").glob("*.png"))),
-        "test_good": len(list((class_dir / "test" / "good").glob("*.png"))),
-        "test_defect": len(list((class_dir / "test" / "defect").glob("*.png"))),
-    }
-
-
-def is_populated(class_dir: Path) -> bool:
-    c = class_counts(class_dir)
-    return c["train_good"] >= 20 and c["test_defect"] >= 5
 
 
 # ---------------------------------------------------------------------------

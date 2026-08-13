@@ -47,6 +47,7 @@ class Settings:
     openai_model: str
     hf_token: str
     vector_index_name: str
+    recall_index_name: str
     route_threshold: float
     route_ambiguous_floor: float
     clip_model: str
@@ -71,6 +72,7 @@ def get_settings() -> Settings:
         openai_model=os.environ.get("OPENAI_MODEL", "gpt-4o"),
         hf_token=os.environ.get("HF_TOKEN", "").strip(),
         vector_index_name=os.environ.get("VECTOR_INDEX_NAME", "model_router_idx"),
+        recall_index_name=os.environ.get("RECALL_INDEX_NAME", "finding_recall_idx"),
         route_threshold=float(os.environ.get("ROUTE_THRESHOLD", "0.82")),
         route_ambiguous_floor=float(os.environ.get("ROUTE_AMBIGUOUS_FLOOR", "0.70")),
         clip_model=os.environ.get("CLIP_MODEL", "ViT-B-32"),

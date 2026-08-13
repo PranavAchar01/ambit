@@ -43,6 +43,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
               <Link href="/trends" className="hover:underline">
                 Trends
               </Link>
+              <Link href="/voice" className="hover:underline">
+                Voice
+              </Link>
             </div>
             <ThemeToggle />
           </nav>

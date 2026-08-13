@@ -468,9 +468,14 @@ def persist(state: AgentState) -> dict[str, Any]:
     started = state.get("started_ms") or time.time() * 1000.0
     latency = int(time.time() * 1000.0 - started)
 
+    # The frame's CLIP vector is already computed by embed_frame; persisting it is
+    # what turns findings from a log into searchable episodic memory.
+    embedding = state.get("embedding") or []
+
     doc = {
         "timestamp": datetime.now(UTC),
         "uploaded_image_id": ObjectId(state["uploaded_image_id"]),
+        "embedding": [float(x) for x in embedding],
         "asset_class": state.get("asset_class") or state.get("asset_class_hint"),
         "routed_model_id": ObjectId(state["routed_model_id"]) if state.get("routed_model_id") else None,
         "routed_model_name": state.get("routed_model_name"),

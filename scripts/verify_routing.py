@@ -91,10 +91,10 @@ def main() -> int:
         scores = np.array([r[1] for r in rows])
         routed = sum(1 for cls, score, gate in rows if score >= gate)
         if asset_class in registered:
-            hits = sum(1 for cls, _, _ in rows if cls == asset_class)
-            correct += hits
+            n_correct = sum(1 for cls, _, _ in rows if cls == asset_class)
+            correct += n_correct
             total += len(rows)
-            label = f"{hits}/{len(rows)}"
+            label = f"{n_correct}/{len(rows)}"
         else:
             label = "WITHHELD"
         print(

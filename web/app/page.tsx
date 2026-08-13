@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { AgentSteps } from "@/components/AgentSteps";
 import { ColdStartPanel } from "@/components/ColdStartPanel";
+import { RegistryMap } from "@/components/RegistryMap";
 import { ResultView } from "@/components/ResultView";
 import { inspectStream } from "@/lib/api";
 import type { AgentStep, InspectResult } from "@/lib/types";
@@ -98,19 +99,20 @@ export default function InspectPage() {
       {(running || steps.length > 0) && !result ? (
         <section className="surface rounded-lg p-4">
           <h2 className="mb-3 text-sm font-semibold">Agent</h2>
-          <div className="grid gap-4 sm:grid-cols-[minmax(0,14rem)_1fr]">
-            {previewUrl ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img
-                src={previewUrl}
-                alt="Frame being inspected"
-                className="w-full rounded-md"
-                style={{ border: "1px solid var(--border)" }}
-              />
-            ) : (
-              <div />
-            )}
-            <AgentSteps steps={steps} running={running} />
+          <div className="grid gap-5 lg:grid-cols-[minmax(0,26rem)_1fr]">
+            <RegistryMap steps={steps} running={running} />
+            <div className="flex flex-col gap-4">
+              {previewUrl ? (
+                // eslint-disable-next-line @next/next/no-img-element
+                <img
+                  src={previewUrl}
+                  alt="Frame being inspected"
+                  className="w-full max-w-52 rounded-md"
+                  style={{ border: "1px solid var(--border)" }}
+                />
+              ) : null}
+              <AgentSteps steps={steps} running={running} />
+            </div>
           </div>
         </section>
       ) : null}
@@ -123,6 +125,13 @@ export default function InspectPage() {
 
       {result ? (
         <>
+          <section className="surface rounded-lg p-4">
+            <h2 className="mb-3 text-sm font-semibold">Routing decision across the registry</h2>
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,26rem)_1fr]">
+              <RegistryMap steps={result.trace?.length ? result.trace : steps} running={false} />
+              <AgentSteps steps={result.trace?.length ? result.trace : steps} running={false} />
+            </div>
+          </section>
           {result.verdict === "unroutable" ? (
             <ColdStartPanel
               frame={file}

@@ -18,6 +18,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from gridfs.errors import NoFile
 from PIL import Image, UnidentifiedImageError
+from pydantic import BaseModel, Field
 
 from gridsight.agent.graph import build_graph, get_app, make_saver, store_pil
 from gridsight.analytics import compute_trends
@@ -25,12 +26,17 @@ from gridsight.config import get_settings
 from gridsight.db.mongo import (
     datasets_col,
     ensure_collections,
+    finding_recall_index,
     findings_col,
     images_bucket,
+    model_router_index,
     models_col,
     search_index_status,
+    vector_search,
 )
+from gridsight.embed import get_embedder
 from gridsight.train.store import storage_report
+from gridsight.voice import ToolError, execute_tool, mint_client_secret, realtime_model, tool_schemas
 
 logging.basicConfig(
     level=logging.INFO,
@@ -159,10 +165,12 @@ def _result_payload(state: dict[str, Any]) -> dict[str, Any]:
 
 @app.get("/health")
 def health() -> dict[str, Any]:
-    status = search_index_status(get_settings().vector_index_name)
+    router, recall_idx = model_router_index(), finding_recall_index()
+    status = search_index_status(router)
     return {
         "status": "ok",
-        "vector_index": {"name": get_settings().vector_index_name, "status": status},
+        "vector_index": {"name": router.name, "status": status},
+        "recall_index": {"name": recall_idx.name, "status": search_index_status(recall_idx)},
         "models": models_col().count_documents({}),
         "findings": findings_col().count_documents({}),
         "storage": storage_report(),
@@ -312,6 +320,78 @@ def list_models() -> dict[str, Any]:
     }
 
 
+@app.get("/registry/layout")
+def registry_layout() -> dict[str, Any]:
+    """Stable polar coordinates for visualising the registry.
+
+    The UI renders routing radially: distance from the centre is `1 - score`, i.e.
+    the *real* measured similarity, and each model's coverage gate is a ring at
+    `1 - routing_threshold`. A model's dot falling inside its own ring is exactly
+    what "this frame is within the competence I learned" means.
+
+    Only the ANGLE comes from here. It is derived by ranking models around a PCA
+    of their centroids, then spacing them evenly so labels never collide -- it
+    encodes neighbourhood ordering, not distance, and the UI says so.
+    """
+    import numpy as np
+
+    docs = list(
+        models_col()
+        .find(
+            {},
+            {
+                "name": 1,
+                "asset_class": 1,
+                "embedding": 1,
+                "routing_threshold": 1,
+                "created_by": 1,
+                "reference_image_id": 1,
+                "metrics": 1,
+            },
+        )
+        .sort("created_at", 1)
+    )
+    if not docs:
+        return {"models": [], "route_threshold": get_settings().route_threshold}
+
+    vectors = np.array([d["embedding"] for d in docs], dtype=np.float32)
+    if len(docs) >= 3:
+        centred = vectors - vectors.mean(axis=0, keepdims=True)
+        # first two right-singular vectors == the 2-d PCA plane
+        _, _, vt = np.linalg.svd(centred, full_matrices=False)
+        coords = centred @ vt[:2].T
+        raw = np.arctan2(coords[:, 1], coords[:, 0])
+    else:
+        raw = np.linspace(0, 2 * np.pi, len(docs), endpoint=False)
+
+    # even spacing by PCA-angle rank: keeps neighbours adjacent, guarantees no overlap
+    order = np.argsort(raw)
+    angles = np.empty(len(docs), dtype=np.float64)
+    for slot, idx in enumerate(order):
+        angles[idx] = 2 * np.pi * slot / len(docs)
+
+    settings = get_settings()
+    return {
+        "route_threshold": settings.route_threshold,
+        "angle_is_illustrative": True,
+        "models": [
+            {
+                "model_id": str(d["_id"]),
+                "name": d["name"],
+                "asset_class": d["asset_class"],
+                "angle": round(float(angles[i]), 5),
+                "gate": round(max(settings.route_threshold, float(d.get("routing_threshold") or 0.0)), 4),
+                "created_by": d.get("created_by"),
+                "image_auroc": (d.get("metrics") or {}).get("image_auroc"),
+                "reference_image_url": (
+                    f"/image/{d['reference_image_id']}" if d.get("reference_image_id") else None
+                ),
+            }
+            for i, d in enumerate(docs)
+        ],
+    }
+
+
 @app.get("/datasets")
 def list_datasets() -> dict[str, Any]:
     return {"datasets": [_serialize(d) for d in datasets_col().find()]}
@@ -370,6 +450,114 @@ def list_findings(
 def trends(days: int = Query(30, ge=1, le=365)) -> dict[str, Any]:
     """Fleet health: defect rate over time, severity spread, and what is degrading fastest."""
     return compute_trends(findings_col(), models_col(), days=days)
+
+
+@app.post("/recall")
+async def recall(
+    image: UploadFile = File(...),
+    k: int = Form(6),
+    verdict: str | None = Form(None),
+    asset_class: str | None = Form(None),
+) -> JSONResponse:
+    """Episodic memory: "have we seen this before?"
+
+    Vector-searches past *findings* rather than models, so the answer comes from
+    what the fleet has actually observed, not from what it was trained on.
+    """
+    frame = await _read_image(image)
+    vector = [float(x) for x in get_embedder().embed_one(frame)]
+
+    filters: dict[str, Any] = {}
+    if verdict:
+        filters["verdict"] = verdict
+    if asset_class:
+        filters["asset_class"] = asset_class
+
+    idx = finding_recall_index()
+    hits = vector_search(vector, k=max(1, min(k, 25)), index=idx, filters=filters or None)
+
+    matches = []
+    for h in hits:
+        item = _serialize(h)
+        item["similarity"] = round(float(h["score"]), 4)
+        item["uploaded_image_url"] = (
+            f"/image/{item['uploaded_image_id']}" if item.get("uploaded_image_id") else None
+        )
+        item["heatmap_url"] = f"/image/{item['heatmap_id']}" if item.get("heatmap_id") else None
+        matches.append(item)
+
+    defects = [m for m in matches if m.get("verdict") == "defect"]
+    return JSONResponse(
+        {
+            "index": {"name": idx.name, "status": search_index_status(idx)},
+            "count": len(matches),
+            "recurrence": {
+                "similar_defects": len(defects),
+                "first_seen": min((m["timestamp"] for m in defects), default=None),
+                "last_seen": max((m["timestamp"] for m in defects), default=None),
+            },
+            "matches": matches,
+        }
+    )
+
+
+class VoiceToolCall(BaseModel):
+    """One function call emitted by the realtime model, relayed by the browser."""
+
+    name: str = Field(description="Registered voice tool name.")
+    arguments: dict[str, Any] = Field(default_factory=dict)
+
+
+@app.post("/voice/session")
+def voice_session() -> JSONResponse:
+    """Mint an ephemeral realtime credential for the browser.
+
+    The returned `ek_` token is realtime-scoped -- verified to 401 against
+    `chat.completions` and `models.list` -- and the session's model, instructions
+    and tool list are bound server-side. `OPENAI_API_KEY` never leaves this process.
+    """
+    started = time.perf_counter()
+    try:
+        payload = mint_client_secret()
+    except ToolError as exc:
+        raise HTTPException(503, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - a failed mint must not 500 silently
+        log.exception("voice session mint failed")
+        raise HTTPException(502, f"could not mint a realtime credential: {type(exc).__name__}") from exc
+
+    log.info(
+        "voice session minted model=%s tools=%d in %.2fs",
+        payload["model"],
+        len(payload["tools"]),
+        time.perf_counter() - started,
+    )
+    return JSONResponse(payload)
+
+
+@app.get("/voice/tools")
+def voice_tools() -> dict[str, Any]:
+    """The tool schemas, without spending a credential -- useful for inspection."""
+    return {"model": realtime_model(), "tools": tool_schemas()}
+
+
+@app.post("/voice/tool")
+def voice_tool(call: VoiceToolCall) -> JSONResponse:
+    """Execute one voice tool against MongoDB and hand the result back to the model."""
+    started = time.perf_counter()
+    try:
+        result = execute_tool(call.name, call.arguments)
+    except ToolError as exc:
+        log.warning("voice tool %s rejected: %s", call.name, exc)
+        raise HTTPException(400, str(exc)) from exc
+    except Exception as exc:  # noqa: BLE001 - report the failure to the model, stay up
+        log.exception("voice tool %s failed", call.name)
+        raise HTTPException(500, f"{call.name} failed: {type(exc).__name__}") from exc
+
+    elapsed_ms = round((time.perf_counter() - started) * 1000.0, 1)
+    log.info("voice tool %s args=%s in %sms", call.name, sorted(call.arguments), elapsed_ms)
+    return JSONResponse(
+        {"name": call.name, "arguments": call.arguments, "latency_ms": elapsed_ms, "result": result}
+    )
 
 
 @app.get("/image/{gridfs_id}")
