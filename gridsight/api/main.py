@@ -41,6 +41,7 @@ from gridsight.db.mongo import (
     vector_search,
 )
 from gridsight.embed import get_embedder
+from gridsight.providers import provider_report
 from gridsight.train.store import storage_report
 from gridsight.voice import ToolError, execute_tool, mint_client_secret, realtime_model, tool_schemas
 
@@ -77,8 +78,15 @@ def _startup() -> None:
             "Atlas vector index is %s, not READY -- routing will fall back to brute-force cosine",
             status,
         )
+    providers = provider_report()
     log.info(
-        "Ambit API up | vector index %s | %d models registered", status, models_col().count_documents({})
+        "Ambit API up | vector index %s | %d models registered | VLM %s (%s) | LLM %s (%s)",
+        status,
+        models_col().count_documents({}),
+        providers["vlm"]["name"],
+        providers["vlm"]["reason"],
+        providers["llm"]["name"],
+        providers["llm"]["reason"],
     )
 
 
@@ -180,6 +188,11 @@ def health() -> dict[str, Any]:
         "models": models_col().count_documents({}),
         "findings": findings_col().count_documents({}),
         "storage": storage_report(),
+        # Reported for the same reason the brute-force vector-search fallback is
+        # logged at ERROR: a silently degraded provider makes a broken deployment
+        # look healthy. This reads configuration only -- it never probes a
+        # provider, because /health is polled (scripts/tunnel.sh gates on it).
+        "providers": provider_report(),
     }
 
 

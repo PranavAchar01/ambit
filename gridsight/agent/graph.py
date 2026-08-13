@@ -26,7 +26,13 @@ from langgraph.checkpoint.mongodb import MongoDBSaver
 from langgraph.graph import END, START, StateGraph
 from PIL import Image
 
-from gridsight.agent.llm import adjudicate_route, name_new_model, narrate_finding, slugify
+from gridsight.agent.llm import (
+    adjudicate_route,
+    name_new_model,
+    narrate_finding,
+    slugify,
+    structured_narrative,
+)
 from gridsight.config import get_settings
 from gridsight.db.mongo import (
     findings_col,
@@ -40,6 +46,8 @@ from gridsight.inference import MODEL_CACHE, heatmap_png, run_inference
 from gridsight.train.fewshot import fit_fewshot
 from gridsight.train.store import put_weights, serialize_patchcore
 from gridsight.train.train_class import ROUTING_GATE_PERCENTILE
+from gridsight.vision.vlm import describe_defect
+from gridsight.vision.vlm_base import VLMResult
 
 log = logging.getLogger("gridsight.agent")
 
@@ -85,6 +93,9 @@ class AgentState(TypedDict, total=False):
     # --- narrate / persist ------------------------------------------------
     agent_narrative: str
     narrative_source: str
+    vlm_component: str | None
+    vlm_difference_visible: bool
+    vlm_latency_ms: int
     finding_id: str
     latency_ms: int
 
@@ -429,7 +440,16 @@ def infer(state: AgentState) -> dict[str, Any]:
 
 
 def narrate(state: AgentState) -> dict[str, Any]:
-    """OpenAI writes the operator-facing finding."""
+    """Describe the finding: from the pixels when there is something to look at.
+
+    A defect gets a vision model comparing the flagged crop against the same
+    crop of the golden reference, because "the third header pin is bent
+    laterally" is what an operator asked for and "anomaly score 43.9 in the
+    upper-left region" is not. Everything else -- nominal, unroutable, no
+    localised region, no reference, a provider that failed or timed out -- gets
+    the existing narrative written from the numbers, and says so in
+    `narrative_source`. No condition produces an invented description.
+    """
     settings = get_settings()
     candidates = state.get("candidates", [])
     verdict = state.get("verdict") or ("unroutable" if state.get("decision") != "route" else "nominal")
@@ -454,11 +474,40 @@ def narrate(state: AgentState) -> dict[str, Any]:
         "width": image.width,
         "height": image.height,
     }
-    text, source = narrate_finding(context)
+    # Only a defect has anything to describe, and only against a reference. An
+    # unroutable frame explicitly does not get a look: there is no known-good
+    # counterpart to compare against, and describing an unrecognised part is
+    # exactly the confabulation abstention exists to prevent.
+    described: VLMResult | None = None
+    if verdict == "defect":
+        reference_id = state.get("reference_image_id")
+        described = describe_defect(
+            frame=image,
+            reference=load_image(reference_id) if reference_id else None,
+            regions=state.get("bbox_regions", []),
+            model_name=str(context["model_name"]),
+            anomaly_score=float(state.get("raw_anomaly_score") or 0.0),
+        )
+
+    extra: dict[str, Any] = {}
+    if described is not None:
+        text, source = described.description, described.source
+        extra = {
+            "vlm_component": described.component,
+            "vlm_difference_visible": described.difference_visible,
+            "vlm_latency_ms": described.latency_ms,
+        }
+    elif verdict == "defect":
+        # The VLM was unavailable or declined; the numbers are still true.
+        text, source = structured_narrative(context), "structured"
+    else:
+        text, source = narrate_finding(context)
+
     return {
         "verdict": verdict,
         "agent_narrative": text,
         "narrative_source": source,
+        **extra,
         "trace": [_step("narrate", f"Narrative written by {source}", source=source)],
     }
 
@@ -491,6 +540,12 @@ def persist(state: AgentState) -> dict[str, Any]:
         ),
         "agent_narrative": state.get("agent_narrative", ""),
         "narrative_source": state.get("narrative_source"),
+        # Which component the description names, whether the model could see a
+        # difference at all, and what the look cost. Written once, at inspection
+        # time: the voice agent answers from these, it never calls the VLM.
+        "vlm_component": state.get("vlm_component"),
+        "vlm_difference_visible": state.get("vlm_difference_visible"),
+        "vlm_latency_ms": state.get("vlm_latency_ms"),
         "decision_source": state.get("decision_source"),
         "decision_reason": state.get("decision_reason"),
         "candidates": state.get("candidates", []),

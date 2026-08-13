@@ -9,7 +9,9 @@ output.
 from __future__ import annotations
 
 import logging
+import os
 import re
+from dataclasses import dataclass
 from typing import Any
 
 from openai import OpenAI
@@ -19,17 +21,110 @@ from gridsight.config import get_settings
 
 log = logging.getLogger("gridsight.llm")
 
+OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+OPENROUTER_DEFAULT_MODEL = "openai/gpt-4o"
+
+#: Handed to OpenRouter as `models`, which fails over to the next entry when a
+#: provider is down or rate-limits. An untested fallback is decoration, so
+#: `scripts/verify_llm.py` forces the primary to 404 and checks one of these
+#: actually answers.
+OPENROUTER_FALLBACK_MODELS: tuple[str, ...] = (
+    "anthropic/claude-3.5-sonnet",
+    "google/gemini-2.0-flash-001",
+    "meta-llama/llama-3.3-70b-instruct",
+)
+
+
+@dataclass(frozen=True)
+class LLMChoice:
+    """Which text-LLM answers, and why. `name` is persisted as the source."""
+
+    name: str
+    reason: str
+    model: str
+    base_url: str | None
+    api_key: str
+
+    @property
+    def available(self) -> bool:
+        return bool(self.api_key)
+
+
+def resolve_llm() -> LLMChoice:
+    """Pick the text-LLM provider. Explicit switch first, then key presence.
+
+    With neither key present the adjudicator does not guess and does not go
+    quiet: it refuses, which is the correct default for a system whose entire
+    claim is that it declines when it does not know. That keeps the demo alive
+    on zero credentials.
+    """
+    settings = get_settings()
+    override = os.environ.get("LLM_PROVIDER", "").strip().lower()
+    openrouter_key = os.environ.get("OPENROUTER_API_KEY", "").strip()
+    openrouter_model = os.environ.get("OPENROUTER_MODEL", "").strip() or OPENROUTER_DEFAULT_MODEL
+
+    if override == "openrouter":
+        return LLMChoice(
+            "openrouter",
+            "LLM_PROVIDER=openrouter" + ("" if openrouter_key else " but OPENROUTER_API_KEY is not set"),
+            openrouter_model,
+            OPENROUTER_BASE_URL,
+            openrouter_key,
+        )
+    if override == "openai":
+        return LLMChoice(
+            "openai",
+            "LLM_PROVIDER=openai" + ("" if settings.has_openai else " but OPENAI_API_KEY is not set"),
+            settings.openai_model,
+            None,
+            settings.openai_api_key,
+        )
+    if override == "none":
+        return LLMChoice("none", "LLM_PROVIDER=none", "", None, "")
+
+    if settings.has_openai:
+        return LLMChoice("openai", "OPENAI_API_KEY is present", settings.openai_model, None,
+                         settings.openai_api_key)
+    if openrouter_key:
+        return LLMChoice("openrouter", "no OpenAI key; OPENROUTER_API_KEY is present", openrouter_model,
+                         OPENROUTER_BASE_URL, openrouter_key)
+    return LLMChoice("none", "neither OPENAI_API_KEY nor OPENROUTER_API_KEY is set", "", None, "")
+
+
 _client: OpenAI | None = None
+_client_key: str | None = None
 
 
 def get_client() -> OpenAI | None:
-    global _client
-    settings = get_settings()
-    if not settings.has_openai:
+    """The configured chat client, or None when no provider has credentials."""
+    global _client, _client_key
+    choice = resolve_llm()
+    if not choice.available:
         return None
-    if _client is None:
-        _client = OpenAI(api_key=settings.openai_api_key)
+    # Re-created when the resolution changes so a test (or verify_llm.py) can
+    # flip LLM_PROVIDER without a fresh process.
+    fingerprint = f"{choice.name}:{choice.base_url}:{choice.api_key[:8]}"
+    if _client is None or _client_key != fingerprint:
+        _client = OpenAI(api_key=choice.api_key, base_url=choice.base_url)
+        _client_key = fingerprint
     return _client
+
+
+def llm_extra_body() -> dict[str, Any]:
+    """OpenRouter's automatic model failover, expressed in its request body."""
+    choice = resolve_llm()
+    if choice.name != "openrouter":
+        return {}
+    return {"models": [choice.model, *OPENROUTER_FALLBACK_MODELS]}
+
+
+def llm_model() -> str:
+    return resolve_llm().model
+
+
+def llm_source() -> str:
+    """The label written into `decision_source` / `narrative_source`."""
+    return resolve_llm().name
 
 
 class RouteAdjudication(BaseModel):
@@ -82,7 +177,11 @@ def adjudicate_route(
                 chosen_model_name=None,
                 should_cold_start=True,
                 confidence=0.0,
-                reasoning="No OpenAI credentials available; refusing rather than guessing.",
+                reasoning=(
+                    "No text-LLM credentials are configured, so the ambiguous band is resolved by "
+                    "the deterministic rule: refuse. Refusing when uncertain is the correct default "
+                    "for this system."
+                ),
             ),
             "fallback",
         )
@@ -98,17 +197,18 @@ def adjudicate_route(
     )
     try:
         completion = client.beta.chat.completions.parse(
-            model=get_settings().openai_model,
+            model=llm_model(),
             messages=[
                 {"role": "system", "content": ADJUDICATE_SYSTEM},
                 {"role": "user", "content": prompt},
             ],
             response_format=RouteAdjudication,
+            extra_body=llm_extra_body(),
         )
         parsed = completion.choices[0].message.parsed
         if parsed is None:
             raise ValueError("structured parse returned no content")
-        return parsed, "openai"
+        return parsed, llm_source()
     except Exception as exc:  # noqa: BLE001 - the agent must stay up if OpenAI is down
         log.warning("route adjudication failed (%s); refusing rather than guessing", exc)
         return (
@@ -139,7 +239,7 @@ def name_new_model(asset_class_hint: str | None, n_references: int, backbone: st
 
     try:
         completion = client.beta.chat.completions.parse(
-            model=get_settings().openai_model,
+            model=llm_model(),
             messages=[
                 {
                     "role": "system",
@@ -157,11 +257,12 @@ def name_new_model(asset_class_hint: str | None, n_references: int, backbone: st
                 },
             ],
             response_format=ModelName,
+            extra_body=llm_extra_body(),
         )
         parsed = completion.choices[0].message.parsed
         if parsed is None:
             raise ValueError("structured parse returned no content")
-        return parsed, "openai"
+        return parsed, llm_source()
     except Exception as exc:  # noqa: BLE001
         log.warning("model naming failed (%s); using deterministic name", exc)
         return fallback, "fallback"
@@ -188,6 +289,18 @@ def _fallback_narrative(context: dict[str, Any]) -> str:
         f"{context['asset_class']}: nominal. Anomaly score {context['raw_score']:.2f} sits below "
         f"{context['model_name']}'s {context['threshold']:.2f} threshold. No action required."
     )
+
+
+def structured_narrative(context: dict[str, Any]) -> str:
+    """The narrative written from the numbers alone, with no model in the loop.
+
+    Public because it is now a first-class outcome rather than only an error
+    path: when a vision model is unavailable or declines to describe a frame,
+    this sentence is what ships, and the finding records `narrative_source:
+    "structured"` so nobody later mistakes it for something that looked at the
+    pixels.
+    """
+    return _fallback_narrative(context)
 
 
 def narrate_finding(context: dict[str, Any]) -> tuple[str, str]:
@@ -225,18 +338,19 @@ def narrate_finding(context: dict[str, Any]) -> tuple[str, str]:
 
     try:
         completion = client.chat.completions.create(
-            model=get_settings().openai_model,
+            model=llm_model(),
             messages=[
                 {"role": "system", "content": NARRATE_SYSTEM},
                 {"role": "user", "content": prompt},
             ],
             max_tokens=260,
             temperature=0.2,
+            extra_body=llm_extra_body(),
         )
         text = (completion.choices[0].message.content or "").strip()
         if not text:
             raise ValueError("empty narrative")
-        return text, "openai"
+        return text, llm_source()
     except Exception as exc:  # noqa: BLE001
         log.warning("narration failed (%s); using deterministic summary", exc)
         return _fallback_narrative(context), "fallback"
