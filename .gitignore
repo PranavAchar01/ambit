@@ -21,3 +21,4 @@ artifacts/
 # playwright browsers / scratch
 web/test-results/
 web/tsconfig.tsbuildinfo
+runtime/

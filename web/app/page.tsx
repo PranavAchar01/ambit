@@ -3,6 +3,7 @@
 import { useCallback, useRef, useState } from "react";
 import { AgentSteps } from "@/components/AgentSteps";
 import { ColdStartPanel } from "@/components/ColdStartPanel";
+import { LiveFeed } from "@/components/LiveFeed";
 import { RegistryMap } from "@/components/RegistryMap";
 import { ResultView } from "@/components/ResultView";
 import { inspectStream } from "@/lib/api";
@@ -48,15 +49,39 @@ export default function InspectPage() {
   );
 
   return (
-    <div className="flex flex-col gap-6">
-      <header>
-        <h1 className="text-2xl font-semibold tracking-tight">Inspect a drone frame</h1>
-        <p className="muted mt-1 max-w-3xl text-sm">
+    <div className="stack-lg">
+      <header className="stack">
+        <h1>Inspect a drone frame</h1>
+        <p className="lede small">
           The agent embeds the frame with OpenCLIP, vector-searches the MongoDB model registry for
           the specialist trained on the most similar imagery, and runs it. If nothing clears that
           specialist&apos;s coverage gate, it refuses rather than guessing.
         </p>
       </header>
+
+      <LiveFeed
+        session="demo"
+        onStart={() => {
+          setFile(null);
+          setPreviewUrl((prev) => {
+            if (prev) URL.revokeObjectURL(prev);
+            return null;
+          });
+          setSteps([]);
+          setResult(null);
+          setError(null);
+          setRunning(true);
+        }}
+        onStep={(step) => setSteps((prev) => [...prev, step])}
+        onResult={(res) => {
+          setResult(res);
+          setRunning(false);
+        }}
+        onError={(message) => {
+          setError(message);
+          setRunning(false);
+        }}
+      />
 
       <div
         onDragOver={(e) => {
@@ -65,11 +90,8 @@ export default function InspectPage() {
         }}
         onDragLeave={() => setDragging(false)}
         onDrop={onDrop}
-        className="rounded-xl p-6 text-center transition-colors"
-        style={{
-          background: dragging ? "var(--surface-2)" : "var(--surface)",
-          border: `2px dashed ${dragging ? "var(--accent)" : "var(--border)"}`,
-        }}
+        className="dropzone"
+        data-drag={dragging ? "true" : undefined}
       >
         <input
           ref={inputRef}
@@ -81,34 +103,28 @@ export default function InspectPage() {
             if (chosen) void run(chosen);
           }}
         />
-        <p className="text-sm">
+        <p className="small">
           Drag a frame here, or{" "}
-          <button
-            type="button"
-            onClick={() => inputRef.current?.click()}
-            className="font-semibold underline"
-            style={{ color: "var(--accent)" }}
-          >
+          <button type="button" onClick={() => inputRef.current?.click()} className="btn-link">
             choose a file
           </button>
           .
         </p>
-        {file ? <p className="muted mono mt-2 text-xs">{file.name}</p> : null}
+        {file ? <p className="mono muted tiny" style={{ marginTop: "8px" }}>{file.name}</p> : null}
       </div>
 
       {(running || steps.length > 0) && !result ? (
-        <section className="surface rounded-lg p-4">
-          <h2 className="mb-3 text-sm font-semibold">Agent</h2>
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,26rem)_1fr]">
+        <section className="panel">
+          <h2 className="panel-hd">Agent</h2>
+          <div className="grid-map">
             <RegistryMap steps={steps} running={running} />
-            <div className="flex flex-col gap-4">
+            <div className="stack">
               {previewUrl ? (
                 // eslint-disable-next-line @next/next/no-img-element
                 <img
                   src={previewUrl}
                   alt="Frame being inspected"
-                  className="w-full max-w-52 rounded-md"
-                  style={{ border: "1px solid var(--border)" }}
+                  style={{ width: "100%", maxWidth: "13rem", border: "1px solid var(--line)" }}
                 />
               ) : null}
               <AgentSteps steps={steps} running={running} />
@@ -118,16 +134,16 @@ export default function InspectPage() {
       ) : null}
 
       {error ? (
-        <p className="surface rounded-lg p-4 text-sm" style={{ color: "var(--danger)" }} role="alert">
+        <p className="panel-alert small red" role="alert">
           {error}
         </p>
       ) : null}
 
       {result ? (
         <>
-          <section className="surface rounded-lg p-4">
-            <h2 className="mb-3 text-sm font-semibold">Routing decision across the registry</h2>
-            <div className="grid gap-5 lg:grid-cols-[minmax(0,26rem)_1fr]">
+          <section className="panel">
+            <h2 className="panel-hd">Routing decision across the registry</h2>
+            <div className="grid-map">
               <RegistryMap steps={result.trace?.length ? result.trace : steps} running={false} />
               <AgentSteps steps={result.trace?.length ? result.trace : steps} running={false} />
             </div>
@@ -143,11 +159,9 @@ export default function InspectPage() {
             />
           ) : null}
           <ResultView result={result} />
-          <details className="surface rounded-lg p-4">
-            <summary className="cursor-pointer text-sm font-semibold">
-              Agent trace ({result.trace?.length ?? steps.length} steps)
-            </summary>
-            <div className="mt-3">
+          <details className="panel">
+            <summary>Agent trace ({result.trace?.length ?? steps.length} steps)</summary>
+            <div style={{ marginTop: "calc(var(--step) * 2)" }}>
               <AgentSteps steps={result.trace?.length ? result.trace : steps} running={false} />
             </div>
           </details>

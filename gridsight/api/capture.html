@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>GridSight — capture</title>
+<style>
+  /* Served straight from the API so one tunnel covers the page, the socket and
+     the upload. Same two colours, same font, same zero-radius rule as the app. */
+  @font-face {
+    font-family: "CMU Typewriter Text";
+    src: url("/fonts/cmu-typewriter-text-500-roman.woff2") format("woff2");
+    font-weight: 500; font-style: normal; font-display: swap;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; border-radius: 0; }
+  html, body {
+    background: #000; color: #e8e8e8; height: 100%; overflow: hidden;
+    font-family: "CMU Typewriter Text", ui-monospace, monospace;
+    -webkit-user-select: none; user-select: none; -webkit-touch-callout: none;
+  }
+  #stage { position: fixed; inset: 0; display: grid; place-items: center; background: #000; }
+  video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+
+  .bar {
+    position: fixed; left: 0; right: 0; display: flex; align-items: center;
+    gap: 10px; padding: max(10px, env(safe-area-inset-top)) 12px 10px;
+    font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase;
+    background: rgba(0,0,0,0.72); border-bottom: 1px solid #262626;
+  }
+  #top { top: 0; }
+  .dot { width: 8px; height: 8px; background: #5f5f5f; flex: 0 0 auto; }
+  .dot[data-on="true"] { background: #ff2d2d; }
+  .spacer { flex: 1 1 auto; }
+  .faint { color: #5f5f5f; }
+
+  /* Hold-still progress. A flat bar -- no ring, no easing, no gradient. */
+  #holdwrap {
+    position: fixed; left: 12px; right: 12px; bottom: calc(96px + env(safe-area-inset-bottom));
+    border: 1px solid #262626; background: rgba(0,0,0,0.72); padding: 10px;
+  }
+  #holdlabel { font-size: 12px; letter-spacing: 0.08em; text-transform: uppercase; color: #9a9a9a; }
+  #holdtrack { margin-top: 8px; height: 6px; background: #111; border: 1px solid #262626; }
+  #holdfill { height: 100%; width: 0%; background: #ff2d2d; }
+
+  #verdict {
+    position: fixed; left: 0; right: 0; bottom: 0;
+    padding: 14px 12px calc(14px + env(safe-area-inset-bottom));
+    background: rgba(0,0,0,0.86); border-top: 1px solid #262626; min-height: 84px;
+  }
+  #vline { display: flex; align-items: baseline; gap: 10px; }
+  #vbadge {
+    font-size: 15px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase;
+    border: 1px solid #3a3a3a; padding: 3px 8px; color: #9a9a9a;
+  }
+  #vbadge[data-attention="true"] { color: #ff2d2d; border-color: #ff2d2d; }
+  #vmeta { font-size: 12px; color: #9a9a9a; }
+  #vnote { margin-top: 6px; font-size: 12px; color: #5f5f5f; line-height: 1.45; }
+
+  /* The whole frame flashes red only when something actually wants attention. */
+  #stage[data-attention="true"]::after {
+    content: ""; position: fixed; inset: 0; border: 3px solid #ff2d2d; pointer-events: none;
+  }
+  #fatal {
+    position: fixed; inset: 0; display: none; place-items: center; padding: 24px;
+    background: #000; text-align: center; font-size: 14px; line-height: 1.6;
+  }
+  #fatal[data-show="true"] { display: grid; }
+  #fatal strong { color: #ff2d2d; display: block; margin-bottom: 10px; letter-spacing: 0.08em; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <video id="v" autoplay playsinline muted></video>
+</div>
+
+<div class="bar" id="top">
+  <span class="dot" id="dcam"></span><span>cam</span>
+  <span class="dot" id="dws"></span><span>link</span>
+  <span class="spacer"></span>
+  <span class="faint" id="sid"></span>
+  <span class="faint" id="fps"></span>
+</div>
+
+<div id="holdwrap">
+  <div id="holdlabel">Hold still to inspect</div>
+  <div id="holdtrack"><div id="holdfill"></div></div>
+</div>
+
+<div id="verdict">
+  <div id="vline">
+    <span id="vbadge">standby</span>
+    <span id="vmeta"></span>
+  </div>
+  <div id="vnote">Point at a board and hold steady for two seconds.</div>
+</div>
+
+<div id="fatal"><div><strong>Camera unavailable</strong><span id="fatalmsg"></span></div></div>
+
+<script>
+(() => {
+  "use strict";
+
+  const params = new URLSearchParams(location.search);
+  const SESSION = params.get("s") || "demo";
+
+  // Preview is deliberately tiny. It is a viewfinder for the audience, not the
+  // thing that gets inspected -- the inspected frame is captured at full
+  // sensor resolution further down.
+  // 30 is a ceiling to aim at, not a promise. The encoder and uplink guards in
+  // pushPreview() shed frames when the phone cannot keep up, so asking for 30
+  // and landing at two thirds still clears 20 -- whereas asking for 20 and
+  // missing leaves you at 13. Measured: relay and projected canvas sustain 60
+  // fps with zero drops, so everything below this line is phone-side headroom.
+  // Budget ~24KB/frame at this size and quality: 30fps is ~5.7 Mbps upstream,
+  // which good WiFi carries and cellular generally will not.
+  const PREVIEW_W = 480, PREVIEW_H = 360, PREVIEW_Q = 0.5, PREVIEW_FPS = 30;
+  // Motion detection needs a getImageData readback, which stalls the GPU
+  // pipeline. Running it at preview rate was the single biggest cost per frame,
+  // and hold-still detection does not need 24Hz to resolve a 2s gesture.
+  const MOTION_HZ = 8;
+  const HOLD_MS = 2000;          // how long "still" must last to fire
+  const STILL_THRESHOLD = 0.012; // mean abs luma delta, 0..1
+  const MOVED_THRESHOLD = 0.030; // must exceed this to re-arm after a result
+  const UPLINK_LIMIT = 384 * 1024; // drop preview frames rather than queue them
+
+  const el = (id) => document.getElementById(id);
+  const video = el("v");
+  el("sid").textContent = SESSION;
+
+  const preview = document.createElement("canvas");
+  preview.width = PREVIEW_W; preview.height = PREVIEW_H;
+  const pctx = preview.getContext("2d");
+
+  // 64x48 greyscale is plenty to tell "held still" from "moving", and costs
+  // nothing to read back every tick.
+  const probe = document.createElement("canvas");
+  probe.width = 64; probe.height = 48;
+  const xctx = probe.getContext("2d", { willReadFrequently: true });
+
+  const full = document.createElement("canvas");
+  const fctx = full.getContext("2d");
+
+  let ws = null, wsReady = false;
+  let prevLuma = null, stillMs = 0, state = "idle";
+  let lastPreview = 0, lastMotion = 0, encoding = false;
+  let framesSent = 0, fpsAt = 0, fpsCount = 0;
+
+  function setDot(id, on) { el(id).dataset.on = on ? "true" : "false"; }
+
+  function send(obj) {
+    if (wsReady) ws.send(JSON.stringify(obj));
+  }
+
+  function setPhase(phase, extra) {
+    state = phase;
+    send(Object.assign({ type: "phase", phase: phase }, extra || {}));
+  }
+
+  function connect() {
+    const scheme = location.protocol === "https:" ? "wss" : "ws";
+    ws = new WebSocket(`${scheme}://${location.host}/live/publish/${encodeURIComponent(SESSION)}`);
+    ws.binaryType = "arraybuffer";
+    ws.onopen = () => { wsReady = true; setDot("dws", true); setPhase(state); };
+    ws.onclose = () => { wsReady = false; setDot("dws", false); setTimeout(connect, 1000); };
+    ws.onerror = () => ws.close();
+  }
+
+  function motionScore() {
+    xctx.drawImage(video, 0, 0, probe.width, probe.height);
+    const d = xctx.getImageData(0, 0, probe.width, probe.height).data;
+    const luma = new Uint8Array(probe.width * probe.height);
+    for (let i = 0, p = 0; p < luma.length; i += 4, p++) {
+      luma[p] = (d[i] * 77 + d[i + 1] * 151 + d[i + 2] * 28) >> 8;
+    }
+    if (!prevLuma) { prevLuma = luma; return 1; }
+    let sum = 0;
+    for (let p = 0; p < luma.length; p++) sum += Math.abs(luma[p] - prevLuma[p]);
+    prevLuma = luma;
+    return sum / luma.length / 255;
+  }
+
+  /**
+   * Three drops guard this, all deliberate -- a viewfinder should shed frames
+   * rather than fall behind:
+   *   1. socket not ready
+   *   2. uplink already backed up (bufferedAmount)
+   *   3. the previous JPEG is still encoding, so callbacks cannot pile up
+   * The Blob goes straight to send(); the old arrayBuffer() hop was a second
+   * async round trip per frame that bought nothing.
+   */
+  function pushPreview() {
+    if (!wsReady || encoding || ws.bufferedAmount > UPLINK_LIMIT) return;
+    encoding = true;
+    pctx.drawImage(video, 0, 0, PREVIEW_W, PREVIEW_H);
+    preview.toBlob((blob) => {
+      encoding = false;
+      if (!blob || !wsReady) return;
+      ws.send(blob);
+      framesSent++;
+    }, "image/jpeg", PREVIEW_Q);
+  }
+
+  function setHold(fraction, label) {
+    el("holdfill").style.width = `${Math.round(Math.min(1, fraction) * 100)}%`;
+    el("holdlabel").textContent = label;
+  }
+
+  function setVerdict(badge, meta, note, attention) {
+    el("vbadge").textContent = badge;
+    el("vbadge").dataset.attention = attention ? "true" : "false";
+    el("stage").dataset.attention = attention ? "true" : "false";
+    el("vmeta").textContent = meta || "";
+    el("vnote").textContent = note || "";
+  }
+
+  /**
+   * PNG, not JPEG, and deliberately so. Measured against the registry, JPEG
+   * recompression costs 0.01-0.024 of routing score -- enough to push a frame
+   * under a tight coverage gate and turn a real inspection into a refusal.
+   * The preview above stays JPEG because it is a throwaway viewfinder; this is
+   * the one frame that gets scored, so it is worth the extra megabytes.
+   */
+  function captureFull() {
+    return new Promise((resolve) => {
+      full.width = video.videoWidth || 1280;
+      full.height = video.videoHeight || 720;
+      fctx.drawImage(video, 0, 0, full.width, full.height);
+      full.toBlob((b) => resolve(b), "image/png");
+    });
+  }
+
+  /**
+   * The phone owns the SSE stream and forwards each event over its own socket.
+   * The relay stays a dumb pipe, and the projected view gets the agent's steps
+   * without the server having to know a socket exists.
+   */
+  async function inspect() {
+    setPhase("inspecting");
+    setHold(1, "Inspecting…");
+    setVerdict("working", "", "Uploading full-resolution frame to the agent.", false);
+
+    const blob = await captureFull();
+    send({ type: "captured", width: full.width, height: full.height, bytes: blob.size });
+
+    const form = new FormData();
+    form.append("image", blob, "phone.png");
+
+    let res;
+    try {
+      res = await fetch("/inspect/stream", { method: "POST", body: form });
+    } catch (e) {
+      setVerdict("error", "", String(e), true);
+      send({ type: "error", message: String(e) });
+      return rearm();
+    }
+    if (!res.ok || !res.body) {
+      const msg = `inspect responded ${res.status}`;
+      setVerdict("error", "", msg, true);
+      send({ type: "error", message: msg });
+      return rearm();
+    }
+
+    const reader = res.body.getReader();
+    const dec = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buf += dec.decode(value, { stream: true });
+      const frames = buf.split("\n\n");
+      buf = frames.pop() || "";
+      for (const f of frames) {
+        const evLine = f.split("\n").find((l) => l.startsWith("event: "));
+        const dtLine = f.split("\n").find((l) => l.startsWith("data: "));
+        if (!evLine || !dtLine) continue;
+        const event = evLine.slice(7).trim();
+        const data = JSON.parse(dtLine.slice(6));
+        send({ type: event, data: data });
+
+        if (event === "step") {
+          setHold(1, data.label || data.node || "working");
+        } else if (event === "result") {
+          const attention = data.verdict === "defect" || data.verdict === "unroutable";
+          const meta = [data.asset_class, data.latency_ms ? `${data.latency_ms} ms` : null]
+            .filter(Boolean).join(" · ");
+          setVerdict(data.verdict, meta, data.narrative || "", attention);
+        } else if (event === "error") {
+          setVerdict("error", "", data.message, true);
+        }
+      }
+    }
+    rearm();
+  }
+
+  function rearm() {
+    stillMs = 0;
+    setPhase("cooldown");
+    setHold(0, "Move, then hold still again");
+  }
+
+  function tick(now) {
+    requestAnimationFrame(tick);
+    if (video.readyState < 2) return;
+
+    if (now - lastPreview >= 1000 / PREVIEW_FPS) {
+      lastPreview = now;
+      pushPreview();
+      if (now - fpsAt > 1000) {
+        el("fps").textContent = `${framesSent - fpsCount} fps`;
+        fpsCount = framesSent; fpsAt = now;
+      }
+    }
+
+    if (now - lastMotion < 1000 / MOTION_HZ) return;
+    const dt = now - lastMotion;
+    lastMotion = now;
+
+    const score = motionScore();
+    if (state === "inspecting") return;
+
+    if (state === "cooldown") {
+      if (score > MOVED_THRESHOLD) { state = "idle"; setPhase("idle"); }
+      return;
+    }
+
+    if (score < STILL_THRESHOLD) {
+      stillMs = Math.min(HOLD_MS, stillMs + dt);
+      setHold(stillMs / HOLD_MS, `Holding ${(stillMs / 1000).toFixed(1)}s / 2.0s`);
+      send({ type: "phase", phase: "holding", progress: stillMs / HOLD_MS });
+      if (stillMs >= HOLD_MS) void inspect();
+    } else {
+      if (stillMs > 0) setHold(0, "Hold still to inspect");
+      stillMs = 0;
+    }
+  }
+
+  async function start() {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: { ideal: "environment" }, width: { ideal: 1280 } },
+        audio: false,
+      });
+      video.srcObject = stream;
+      setDot("dcam", true);
+    } catch (e) {
+      el("fatal").dataset.show = "true";
+      el("fatalmsg").textContent =
+        (location.protocol === "https:")
+          ? String(e)
+          : "This page must be served over HTTPS. Open the cloudflared URL, not the LAN address.";
+      return;
+    }
+    try { await navigator.wakeLock.request("screen"); } catch (_) { /* nice-to-have */ }
+    connect();
+    requestAnimationFrame(tick);
+  }
+
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+    el("fatal").dataset.show = "true";
+    el("fatalmsg").textContent =
+      "getUserMedia is unavailable. Serve this page over HTTPS (cloudflared), not http://<lan-ip>.";
+  } else {
+    void start();
+  }
+})();
+</script>
+</body>
+</html>

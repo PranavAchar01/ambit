@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import logging
@@ -9,19 +10,24 @@ import time
 import uuid
 from collections.abc import AsyncIterator, Iterator
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 
+import segno
 from bson import ObjectId
 from bson.errors import InvalidId
-from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Query, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from gridfs.errors import NoFile
 from PIL import Image, UnidentifiedImageError
 from pydantic import BaseModel, Field
+from starlette.websockets import WebSocketDisconnect
 
 from gridsight.agent.graph import build_graph, get_app, make_saver, store_pil
 from gridsight.analytics import compute_trends
+from gridsight.api.relay import relay
 from gridsight.config import get_settings
 from gridsight.db.mongo import (
     datasets_col,
@@ -558,6 +564,103 @@ def voice_tool(call: VoiceToolCall) -> JSONResponse:
     return JSONResponse(
         {"name": call.name, "arguments": call.arguments, "latency_ms": elapsed_ms, "result": result}
     )
+
+
+REPO_ROOT = Path(__file__).resolve().parents[2]
+CAPTURE_HTML = Path(__file__).resolve().parent / "capture.html"
+FONTS_DIR = REPO_ROOT / "web" / "public" / "fonts"
+# Written by scripts/tunnel.sh. Read per request so restarting the tunnel never
+# means restarting the API -- quick tunnels get a new hostname every time.
+TUNNEL_FILE = REPO_ROOT / "runtime" / "tunnel.json"
+
+if FONTS_DIR.is_dir():
+    app.mount("/fonts", StaticFiles(directory=FONTS_DIR), name="fonts")
+
+
+def _public_base() -> str | None:
+    try:
+        return str(json.loads(TUNNEL_FILE.read_text())["public_url"]).rstrip("/")
+    except (OSError, ValueError, KeyError):
+        return None
+
+
+@app.get("/capture")
+def capture_page() -> FileResponse:
+    """The phone client. Served from the API so one tunnel covers page, socket and upload."""
+    return FileResponse(CAPTURE_HTML, media_type="text/html")
+
+
+@app.get("/live/config")
+def live_config(session: str = Query("demo")) -> dict[str, Any]:
+    base = _public_base()
+    return {
+        "session_id": session,
+        "public_url": base,
+        "capture_url": f"{base}/capture?s={session}" if base else None,
+        "sessions": relay.stats(),
+    }
+
+
+@app.get("/live/qr.svg")
+def live_qr(session: str = Query("demo")) -> Response:
+    """QR for the capture URL -- typing a random trycloudflare hostname on a phone is miserable."""
+    base = _public_base()
+    if not base:
+        raise HTTPException(503, "no public tunnel yet; run scripts/tunnel.sh")
+    buf = io.BytesIO()
+    segno.make(f"{base}/capture?s={session}", error="m").save(
+        buf, kind="svg", scale=6, border=2, dark="#ff2d2d", light="#000000"
+    )
+    return Response(buf.getvalue(), media_type="image/svg+xml")
+
+
+@app.websocket("/live/publish/{session_id}")
+async def live_publish(ws: WebSocket, session_id: str) -> None:
+    """Phone -> server. Binary frames are the viewfinder; text frames are agent events."""
+    await ws.accept()
+    relay.set_publisher(session_id, True)
+    log.info("relay publisher connected session=%s", session_id)
+    try:
+        while True:
+            msg = await ws.receive()
+            if msg["type"] == "websocket.disconnect":
+                break
+            if (payload := msg.get("bytes")) is not None:
+                relay.publish_frame(session_id, payload)
+            elif (text := msg.get("text")) is not None:
+                try:
+                    relay.publish_message(session_id, json.loads(text))
+                except json.JSONDecodeError:
+                    log.warning("relay dropped non-JSON text frame session=%s", session_id)
+    except WebSocketDisconnect:
+        pass
+    finally:
+        relay.set_publisher(session_id, False)
+        log.info("relay publisher gone session=%s", session_id)
+
+
+@app.websocket("/live/watch/{session_id}")
+async def live_watch(ws: WebSocket, session_id: str) -> None:
+    """Server -> projected laptop view."""
+    await ws.accept()
+    viewer = relay.add_viewer(session_id, ws)
+
+    async def drain() -> None:
+        while True:
+            await ws.receive()
+
+    pump = asyncio.create_task(viewer.pump())
+    reader = asyncio.create_task(drain())
+    try:
+        _, pending = await asyncio.wait({pump, reader}, return_when=asyncio.FIRST_COMPLETED)
+        for task in pending:
+            task.cancel()
+    except WebSocketDisconnect:
+        pass
+    finally:
+        pump.cancel()
+        reader.cancel()
+        relay.remove_viewer(session_id, viewer)
 
 
 @app.get("/image/{gridfs_id}")
