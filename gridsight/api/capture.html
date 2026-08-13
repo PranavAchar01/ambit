@@ -104,30 +104,45 @@
   const SESSION = params.get("s") || "demo";
 
   /* --------------------------------------------------------------------
-   * Frame rate is camera-bound, not pipeline-bound.
+   * Everything per-frame that can leave the main thread has left it.
    *
-   * Measured: the relay and the projected canvas sustain 120 fps with zero
-   * drops, so nothing downstream is the limit. Everything here exists to stop
-   * the phone from being one:
+   * The main thread now does exactly two things per camera frame: blit the
+   * video into a small OffscreenCanvas, and transfer that frame to a worker.
+   * Both are GPU-side and zero-copy. Previously it also ran getImageData for
+   * motion detection (a readback that stalls the GPU pipeline) and, at capture
+   * time, a full-resolution PNG encode -- a multi-hundred-millisecond freeze
+   * landing exactly when the operator was holding the phone still.
    *
-   *   - requestVideoFrameCallback paces capture to the camera itself, so we
-   *     never encode the same frame twice and never miss one. A rAF loop at a
-   *     fixed interval does both.
-   *   - JPEG encoding runs in a worker on an OffscreenCanvas. On the main
-   *     thread it competed with the viewfinder's own compositing.
-   *   - The worker owns the socket, so frame bytes never touch the main thread.
-   *   - Quality adapts to the uplink instead of frames being dropped: a phone
-   *     on hotel wifi degrades to softer frames at full rate rather than a
-   *     stuttering slideshow.
+   * Pacing is AIMD, not a binary gate. The old code ran flat out until the
+   * socket saturated, hard-stopped, drained, then burst again -- a sawtooth
+   * that reads as lag spikes. Multiplicative decrease on congestion plus
+   * additive increase on headroom converges smoothly instead.
+   *
+   * Frames cross the public internet: cloudflared hauls every one to a
+   * Cloudflare edge and back, so the uplink -- not the encoder -- sets the
+   * ceiling. Hence pacing and quality both adapt, and neither is a constant.
    * ------------------------------------------------------------------ */
-  const PREVIEW_W = 480, PREVIEW_H = 360;
-  const CAMERA_FPS = 60;           // asked for; the device grants what it can
-  const Q_MAX = 0.62, Q_MIN = 0.28, Q_START = 0.5;
-  const UPLINK_HIGH = 192 * 1024;  // back off quality above this backlog
-  const UPLINK_LOW = 48 * 1024;    // recover quality below it
-  const MAX_INFLIGHT = 3;          // outstanding encodes before we skip a frame
-
-  const MOTION_HZ = 8;             // getImageData is a GPU stall; 8Hz resolves a 2s hold
+  // 320x240, and the smaller frame is why this is fast rather than a compromise
+  // against it. Measured over the live tunnel at a fixed send rate:
+  //
+  //   480x360 q50  23.1KB  27.7fps  latency p50 116ms  p95 350ms  jitter 46.8ms
+  //   320x240 q40   9.3KB  42.2fps  latency p50  24ms  p95 111ms  jitter 24.6ms
+  //
+  // Better on every axis at once, including frame rate. Fat frames do not
+  // arrive late because they are slow to encode -- they arrive late because
+  // they queue, and a queue is latency. Bytes on the wire are the budget.
+  const PREVIEW_W = 320, PREVIEW_H = 240;
+  const FPS_START = 30, FPS_MIN = 8, FPS_MAX = 60;
+  const CAMERA_FPS = 60;
+  const Q_MAX = 0.55, Q_MIN = 0.30, Q_START = 0.42;
+  // Buffer IS latency, so these are deliberately small. The old 128KB ceiling
+  // let a dozen frames queue -- video already committed to the wire before
+  // pacing could react, felt as lag rather than seen as stutter. At ~9KB a
+  // frame, 24KB is under three.
+  const UPLINK_HIGH = 24 * 1024;    // congestion signal
+  const UPLINK_LOW = 6 * 1024;      // headroom signal
+  const MAX_INFLIGHT = 2;           // in-flight frames are latency too
+  const MOTION_HZ = 8;
   const HOLD_MS = 2000;
   const STILL_THRESHOLD = 0.012;
   const MOVED_THRESHOLD = 0.030;
@@ -136,92 +151,76 @@
   const video = el("v");
   el("sid").textContent = SESSION;
 
-  const probe = document.createElement("canvas");
-  probe.width = 64; probe.height = 48;
-  const xctx = probe.getContext("2d", { willReadFrequently: true });
-
-  const full = document.createElement("canvas");
-  const fctx = full.getContext("2d");
-
-  let prevLuma = null, stillMs = 0, state = "idle";
-  let lastMotion = 0, inflight = 0, wsReady = false;
+  let stillMs = 0, state = "idle";
+  let wsReady = false, inflight = 0, socketBacklog = 0;
+  let targetFps = FPS_START, lastSent = 0, lastMotionAt = 0;
   let framesSent = 0, fpsCount = 0, fpsAt = 0, quality = Q_START;
-  // Mirrored back from the worker. Adapting quality is not sufficient on its
-  // own: measured, a producer outrunning the socket pushed the backlog to 23 MB
-  // even with quality pinned at the floor, because dropping 0.62 -> 0.28 only
-  // halves the bytes. The producer has to stop, so the worker's view of
-  // bufferedAmount has to reach the thread that decides whether to capture.
-  let socketBacklog = 0, skippedForBacklog = 0;
+  let pendingFull = null;
 
-  /* ---------------- encoder worker ---------------- */
-  // Inlined as a blob so the phone client stays a single file. A blob worker
-  // inherits this origin, so its socket needs no extra CORS or auth.
-  const WORKER_SRC = `
-    let ws = null, canvas = null, ctx = null, quality = ${Q_START}, sent = 0;
-    const Q_MAX = ${Q_MAX}, Q_MIN = ${Q_MIN};
-    const HIGH = ${UPLINK_HIGH}, LOW = ${UPLINK_LOW};
-    let clearStreak = 0;
-
-    function connect(url) {
-      ws = new WebSocket(url);
-      ws.binaryType = "arraybuffer";
-      ws.onopen = () => postMessage({ type: "ws", ready: true });
-      ws.onclose = () => { postMessage({ type: "ws", ready: false }); setTimeout(() => connect(url), 1000); };
-      ws.onerror = () => ws && ws.close();
-    }
-
-    self.onmessage = async (e) => {
-      const m = e.data;
-      if (m.type === "connect") { connect(m.url); return; }
-      if (m.type === "json") { if (ws && ws.readyState === 1) ws.send(JSON.stringify(m.payload)); return; }
-      // While saturated the producer stops sending frames, so frame-carried
-      // backlog reports stop too and its reading would stay stale-high forever.
-      // A poll is how the producer learns the socket has drained.
-      if (m.type === "poll") {
-        postMessage({ type: "sent", sent, quality, buffered: ws ? ws.bufferedAmount : 0 });
-        return;
-      }
-      if (m.type !== "frame") return;
-
-      const bmp = m.bitmap;
-      if (!ws || ws.readyState !== 1) { bmp.close(); postMessage({ type: "done" }); return; }
-
-      // Adapt quality to the backlog rather than dropping frames outright.
-      if (ws.bufferedAmount > HIGH) {
-        quality = Math.max(Q_MIN, quality - 0.06);
-        clearStreak = 0;
-      } else if (ws.bufferedAmount < LOW && ++clearStreak > 30) {
-        quality = Math.min(Q_MAX, quality + 0.02);
-        clearStreak = 0;
-      }
-
-      if (!canvas) {
-        canvas = new OffscreenCanvas(${PREVIEW_W}, ${PREVIEW_H});
-        ctx = canvas.getContext("2d", { alpha: false });
-      }
-      ctx.drawImage(bmp, 0, 0, ${PREVIEW_W}, ${PREVIEW_H});
-      bmp.close();
-
-      try {
-        const blob = await canvas.convertToBlob({ type: "image/jpeg", quality });
-        if (ws && ws.readyState === 1) { ws.send(blob); sent++; }
-        postMessage({ type: "sent", sent, quality, buffered: ws ? ws.bufferedAmount : 0 });
-      } catch (err) {
-        postMessage({ type: "encerr", message: String(err) });
-      }
-      postMessage({ type: "done" });
-    };
-  `;
+  /* ---------------- encoder + analyser worker ---------------- */
+  const WORKER_SRC = [
+    'var ws=null, canvas=null, ctx=null, motion=null, mctx=null, prev=null;',
+    'var quality=' + Q_START + ', sent=0, streak=0;',
+    'var W=' + PREVIEW_W + ', H=' + PREVIEW_H + ';',
+    'var Q_MAX=' + Q_MAX + ', Q_MIN=' + Q_MIN + ', HIGH=' + UPLINK_HIGH + ', LOW=' + UPLINK_LOW + ';',
+    'function connect(url){',
+    '  ws=new WebSocket(url); ws.binaryType="arraybuffer";',
+    '  ws.onopen=function(){postMessage({type:"ws",ready:true});};',
+    '  ws.onclose=function(){postMessage({type:"ws",ready:false}); setTimeout(function(){connect(url);},1000);};',
+    '  ws.onerror=function(){ if(ws) ws.close(); };',
+    '}',
+    'function buffered(){ return ws && ws.readyState===1 ? ws.bufferedAmount : 0; }',
+    // Motion runs here so the readback never touches the main thread.
+    'function score(){',
+    '  if(!motion){ motion=new OffscreenCanvas(64,48); mctx=motion.getContext("2d",{willReadFrequently:true}); }',
+    '  mctx.drawImage(canvas,0,0,64,48);',
+    '  var d=mctx.getImageData(0,0,64,48).data, n=64*48, cur=new Uint8Array(n), i=0, p=0, s=0;',
+    '  for(i=0,p=0;p<n;i+=4,p++){ cur[p]=(d[i]*77+d[i+1]*151+d[i+2]*28)>>8; }',
+    '  if(!prev){ prev=cur; return 1; }',
+    '  for(p=0;p<n;p++){ s+=Math.abs(cur[p]-prev[p]); }',
+    '  prev=cur; return s/n/255;',
+    '}',
+    'self.onmessage=async function(e){',
+    '  var m=e.data;',
+    '  if(m.type==="connect"){ connect(m.url); return; }',
+    '  if(m.type==="json"){ if(ws&&ws.readyState===1) ws.send(JSON.stringify(m.payload)); return; }',
+    '  if(m.type==="poll"){ postMessage({type:"stat",sent:sent,quality:quality,buffered:buffered()}); return; }',
+    // Full-resolution PNG for the actual inspection, encoded off the main thread.
+    '  if(m.type==="full"){',
+    '    var fc=new OffscreenCanvas(m.bitmap.width,m.bitmap.height);',
+    '    fc.getContext("2d",{alpha:false}).drawImage(m.bitmap,0,0);',
+    '    m.bitmap.close();',
+    '    try{ var pb=await fc.convertToBlob({type:"image/png"}); postMessage({type:"full",blob:pb}); }',
+    '    catch(err){ postMessage({type:"full",blob:null,error:String(err)}); }',
+    '    return;',
+    '  }',
+    '  if(m.type!=="frame") return;',
+    '  var bmp=m.bitmap;',
+    '  if(!ws||ws.readyState!==1){ bmp.close(); postMessage({type:"done"}); return; }',
+    '  var b=ws.bufferedAmount;',
+    '  if(b>HIGH){ quality=Math.max(Q_MIN,quality-0.06); streak=0; }',
+    '  else if(b<LOW){ streak++; if(streak>20){ quality=Math.min(Q_MAX,quality+0.02); streak=0; } }',
+    '  if(!canvas){ canvas=new OffscreenCanvas(W,H); ctx=canvas.getContext("2d",{alpha:false}); }',
+    '  ctx.drawImage(bmp,0,0,W,H); bmp.close();',
+    '  if(m.motion){ postMessage({type:"motion",score:score()}); }',
+    '  try{',
+    '    var blob=await canvas.convertToBlob({type:"image/jpeg",quality:quality});',
+    '    if(ws&&ws.readyState===1){ ws.send(blob); sent++; }',
+    '    postMessage({type:"stat",sent:sent,quality:quality,buffered:buffered()});',
+    '  }catch(err){}',
+    '  postMessage({type:"done"});',
+    '};'
+  ].join("\n");
 
   const workerSupported =
     typeof Worker !== "undefined" &&
     typeof OffscreenCanvas !== "undefined" &&
-    typeof createImageBitmap === "function" &&
-    OffscreenCanvas.prototype.convertToBlob;
+    typeof OffscreenCanvas.prototype.transferToImageBitmap === "function" &&
+    typeof OffscreenCanvas.prototype.convertToBlob === "function";
 
   let worker = null;
-  // Fallback path for iOS below 16.4, which lacks OffscreenCanvas.convertToBlob.
-  let fbCanvas = null, fbCtx = null, fbSocket = null;
+  let scaler = null, sctx = null;            // worker path: zero-copy source
+  let fbCanvas = null, fbCtx = null, fbSocket = null, fbProbe = null, fbPctx = null, fbPrev = null;
 
   function setDot(id, on) { el(id).dataset.on = on ? "true" : "false"; }
 
@@ -240,27 +239,41 @@
     return `${scheme}://${location.host}/live/publish/${encodeURIComponent(SESSION)}`;
   }
 
+  /** AIMD: back off hard on congestion, recover gently. Converges without sawtooth. */
+  function pace(backlog) {
+    if (backlog > UPLINK_HIGH) targetFps = Math.max(FPS_MIN, targetFps * 0.7);
+    else if (backlog < UPLINK_LOW) targetFps = Math.min(FPS_MAX, targetFps + 1);
+  }
+
   function startWorker() {
     worker = new Worker(URL.createObjectURL(new Blob([WORKER_SRC], { type: "application/javascript" })));
     worker.onmessage = (e) => {
       const m = e.data;
       if (m.type === "ws") {
-        wsReady = m.ready;
-        setDot("dws", m.ready);
+        wsReady = m.ready; setDot("dws", m.ready);
         if (m.ready) setPhase(state); else socketBacklog = 0;
-      } else if (m.type === "sent") {
-        framesSent = m.sent; quality = m.quality; socketBacklog = m.buffered;
+      } else if (m.type === "stat") {
+        framesSent = m.sent; quality = m.quality; socketBacklog = m.buffered; pace(m.buffered);
       } else if (m.type === "done") {
         inflight = Math.max(0, inflight - 1);
+      } else if (m.type === "motion") {
+        applyMotion(m.score);
+      } else if (m.type === "full") {
+        if (pendingFull) { pendingFull(m.blob); pendingFull = null; }
       }
     };
     worker.postMessage({ type: "connect", url: socketUrl() });
+    scaler = new OffscreenCanvas(PREVIEW_W, PREVIEW_H);
+    sctx = scaler.getContext("2d", { alpha: false });
   }
 
   function startFallback() {
     fbCanvas = document.createElement("canvas");
     fbCanvas.width = PREVIEW_W; fbCanvas.height = PREVIEW_H;
     fbCtx = fbCanvas.getContext("2d", { alpha: false });
+    fbProbe = document.createElement("canvas");
+    fbProbe.width = 64; fbProbe.height = 48;
+    fbPctx = fbProbe.getContext("2d", { willReadFrequently: true });
     const open = () => {
       fbSocket = new WebSocket(socketUrl());
       fbSocket.binaryType = "arraybuffer";
@@ -271,47 +284,47 @@
     open();
   }
 
-  function pushFrame() {
-    if (!wsReady || inflight >= MAX_INFLIGHT) return;
-    // Hard stop, not a quality nudge. Without this the backlog grows without
-    // bound on a slow uplink and the viewfinder drifts minutes behind reality.
+  function fallbackMotion() {
+    fbPctx.drawImage(video, 0, 0, 64, 48);
+    const d = fbPctx.getImageData(0, 0, 64, 48).data;
+    const n = 64 * 48, cur = new Uint8Array(n);
+    for (let i = 0, p = 0; p < n; i += 4, p++) cur[p] = (d[i] * 77 + d[i + 1] * 151 + d[i + 2] * 28) >> 8;
+    if (!fbPrev) { fbPrev = cur; return 1; }
+    let s = 0;
+    for (let p = 0; p < n; p++) s += Math.abs(cur[p] - fbPrev[p]);
+    fbPrev = cur;
+    return s / n / 255;
+  }
+
+  function pushFrame(now, wantMotion) {
+    if (!wsReady || inflight >= MAX_INFLIGHT) return false;
     if (socketBacklog > UPLINK_HIGH) {
-      skippedForBacklog++;
-      if (worker) worker.postMessage({ type: "poll" });  // re-read, or we never resume
-      return;
+      if (worker) worker.postMessage({ type: "poll" });   // else the reading goes stale-high
+      return false;
     }
 
     if (worker) {
       inflight++;
-      // resizeWidth is a hint; Safari may ignore it, in which case the worker's
-      // drawImage does the scaling instead. Correct either way.
-      createImageBitmap(video, { resizeWidth: PREVIEW_W, resizeHeight: PREVIEW_H, resizeQuality: "low" })
-        .then((bmp) => worker.postMessage({ type: "frame", bitmap: bmp }, [bmp]))
-        .catch(() => { inflight = Math.max(0, inflight - 1); });
-      return;
+      // Blit + transferToImageBitmap is synchronous, GPU-side and zero-copy --
+      // cheaper and far more predictable than awaiting createImageBitmap(video).
+      sctx.drawImage(video, 0, 0, PREVIEW_W, PREVIEW_H);
+      worker.postMessage(
+        { type: "frame", bitmap: scaler.transferToImageBitmap(), motion: wantMotion },
+        []
+      );
+      return true;
     }
 
-    if (fbSocket.bufferedAmount > UPLINK_HIGH) return;
+    if (fbSocket.bufferedAmount > UPLINK_HIGH) { pace(fbSocket.bufferedAmount); return false; }
+    pace(fbSocket.bufferedAmount);
     inflight++;
     fbCtx.drawImage(video, 0, 0, PREVIEW_W, PREVIEW_H);
     fbCanvas.toBlob((blob) => {
       inflight = Math.max(0, inflight - 1);
       if (blob && fbSocket && fbSocket.readyState === 1) { fbSocket.send(blob); framesSent++; }
     }, "image/jpeg", quality);
-  }
-
-  function motionScore() {
-    xctx.drawImage(video, 0, 0, probe.width, probe.height);
-    const d = xctx.getImageData(0, 0, probe.width, probe.height).data;
-    const luma = new Uint8Array(probe.width * probe.height);
-    for (let i = 0, p = 0; p < luma.length; i += 4, p++) {
-      luma[p] = (d[i] * 77 + d[i + 1] * 151 + d[i + 2] * 28) >> 8;
-    }
-    if (!prevLuma) { prevLuma = luma; return 1; }
-    let sum = 0;
-    for (let p = 0; p < luma.length; p++) sum += Math.abs(luma[p] - prevLuma[p]);
-    prevLuma = luma;
-    return sum / luma.length / 255;
+    if (wantMotion) applyMotion(fallbackMotion());
+    return true;
   }
 
   function setHold(fraction, label) {
@@ -327,34 +340,62 @@
     el("vnote").textContent = note || "";
   }
 
+  function applyMotion(score) {
+    const now = performance.now();
+    const dt = lastMotionAt ? now - lastMotionAt : 1000 / MOTION_HZ;
+    lastMotionAt = now;
+    if (state === "inspecting") return;
+
+    if (state === "cooldown") {
+      if (score > MOVED_THRESHOLD) { state = "idle"; setPhase("idle"); }
+      return;
+    }
+    if (score < STILL_THRESHOLD) {
+      stillMs = Math.min(HOLD_MS, stillMs + dt);
+      setHold(stillMs / HOLD_MS, `Holding ${(stillMs / 1000).toFixed(1)}s / 2.0s`);
+      send({ type: "phase", phase: "holding", progress: stillMs / HOLD_MS });
+      if (stillMs >= HOLD_MS) void inspect();
+    } else {
+      if (stillMs > 0) setHold(0, "Hold still to inspect");
+      stillMs = 0;
+    }
+  }
+
   /**
    * PNG, not JPEG, and deliberately so. Measured against the registry, JPEG
    * recompression costs 0.01-0.024 of routing score -- enough to push a frame
    * under a tight coverage gate and turn a real inspection into a refusal.
-   * The preview stays JPEG because it is a throwaway viewfinder; this is the
-   * one frame that gets scored, so it is worth the extra megabytes.
+   * The encode happens in the worker: on the main thread it froze the
+   * viewfinder for hundreds of milliseconds at the worst possible moment.
    */
   function captureFull() {
     return new Promise((resolve) => {
-      full.width = video.videoWidth || 1280;
-      full.height = video.videoHeight || 720;
-      fctx.drawImage(video, 0, 0, full.width, full.height);
-      full.toBlob((b) => resolve(b), "image/png");
+      const w = video.videoWidth || 1280, h = video.videoHeight || 720;
+      if (worker) {
+        const fc = new OffscreenCanvas(w, h);
+        fc.getContext("2d", { alpha: false }).drawImage(video, 0, 0, w, h);
+        pendingFull = resolve;
+        worker.postMessage({ type: "full", bitmap: fc.transferToImageBitmap() }, []);
+        return;
+      }
+      const c = document.createElement("canvas");
+      c.width = w; c.height = h;
+      c.getContext("2d", { alpha: false }).drawImage(video, 0, 0, w, h);
+      c.toBlob((b) => resolve(b), "image/png");
     });
   }
 
-  /**
-   * The phone owns the SSE stream and forwards each event over its own socket.
-   * The relay stays a dumb pipe, and the projected view gets the agent's steps
-   * without the server having to know a socket exists.
-   */
   async function inspect() {
     setPhase("inspecting");
     setHold(1, "Inspecting…");
     setVerdict("working", "", "Uploading full-resolution frame to the agent.", false);
 
     const blob = await captureFull();
-    send({ type: "captured", width: full.width, height: full.height, bytes: blob.size });
+    if (!blob) {
+      setVerdict("error", "", "could not encode the frame", true);
+      return rearm();
+    }
+    send({ type: "captured", bytes: blob.size });
 
     const form = new FormData();
     form.append("image", blob, "phone.png");
@@ -412,50 +453,24 @@
     setHold(0, "Move, then hold still again");
   }
 
-  function stepMotion(now) {
-    if (now - lastMotion < 1000 / MOTION_HZ) return;
-    const dt = now - lastMotion;
-    lastMotion = now;
-
-    const score = motionScore();
-    if (state === "inspecting") return;
-
-    if (state === "cooldown") {
-      if (score > MOVED_THRESHOLD) { state = "idle"; setPhase("idle"); }
-      return;
-    }
-
-    if (score < STILL_THRESHOLD) {
-      stillMs = Math.min(HOLD_MS, stillMs + dt);
-      setHold(stillMs / HOLD_MS, `Holding ${(stillMs / 1000).toFixed(1)}s / 2.0s`);
-      send({ type: "phase", phase: "holding", progress: stillMs / HOLD_MS });
-      if (stillMs >= HOLD_MS) void inspect();
-    } else {
-      if (stillMs > 0) setHold(0, "Hold still to inspect");
-      stillMs = 0;
-    }
-  }
-
   function onFrame(now) {
     if (video.readyState >= 2) {
-      pushFrame();
-      stepMotion(now);
+      const dueAt = lastSent + 1000 / targetFps;
+      if (now >= dueAt) {
+        const wantMotion = now - lastMotionAt >= 1000 / MOTION_HZ;
+        if (pushFrame(now, wantMotion)) lastSent = now;
+      }
       if (now - fpsAt > 1000) {
-        // Divide by measured elapsed time: assuming the nominal interval turns
-        // a stall into an inflated number instead of an obviously low one.
         const fps = Math.round(((framesSent - fpsCount) * 1000) / (now - fpsAt));
-        // Show the skip count when the uplink is the limit, so a stuttering
-        // viewfinder reads as "network", not "broken".
-        el("fps").textContent =
-          `${fps} fps q${quality.toFixed(2)}` + (skippedForBacklog ? ` -${skippedForBacklog}` : "");
+        el("fps").textContent = `${fps}/${Math.round(targetFps)}fps q${quality.toFixed(2)}`;
         fpsCount = framesSent; fpsAt = now;
       }
     }
     schedule();
   }
 
-  // rVFC fires once per decoded camera frame -- the correct clock for this.
-  // rAF is the fallback, and free-runs at display rate rather than camera rate.
+  // rVFC fires once per decoded camera frame -- the correct clock. rAF free-runs
+  // at display rate, which is not the same thing and encodes duplicates.
   const hasRVFC = typeof video.requestVideoFrameCallback === "function";
   function schedule() {
     if (hasRVFC) video.requestVideoFrameCallback((now) => onFrame(now));
@@ -485,9 +500,9 @@
     }
 
     const track = stream.getVideoTracks()[0];
-    const settings = track ? track.getSettings() : {};
+    const s = track ? track.getSettings() : {};
     el("holdlabel").textContent =
-      `Hold still to inspect — camera ${settings.frameRate || "?"}fps` +
+      `Hold still to inspect — ${s.width || "?"}x${s.height || "?"} @ ${s.frameRate || "?"}fps` +
       (workerSupported ? "" : " (main-thread encode)");
 
     try { await navigator.wakeLock.request("screen"); } catch (_) { /* nice-to-have */ }

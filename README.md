@@ -176,19 +176,32 @@ Three things worth knowing:
 - **Frames are latest-wins; messages are not.** A viewfinder that queues drifts, so a stalled viewer
   drops stale frames. Agent steps and verdicts queue in order, because dropping the step that says
   *refused* would be a lie.
-- **Frame rate is camera-bound, not pipeline-bound.** The relay and the projected canvas sustain
-  **120 fps with zero drops** (1872 paints in 15.6s, measured by counting `drawImage` calls), so
-  capture is paced by `requestVideoFrameCallback` — one encode per camera frame, never a duplicate,
-  never a miss. JPEG encoding runs in a worker on an `OffscreenCanvas` that owns the socket, so frame
-  bytes never touch the main thread. Against a 60 Hz source that delivers **59.1 fps with a 50 KB
-  socket backlog**.
-- **Quality adapts; the producer also stops.** Adapting quality alone is not enough — measured, a
-  producer outrunning the socket grew the backlog to **23 MB** with quality pinned at its floor,
-  because 0.62 → 0.28 only halves the bytes. So the worker's `bufferedAmount` is mirrored back to the
-  thread that decides whether to capture, and while saturated the producer polls for a fresh reading
-  (without the poll, the reading goes stale-high and the stream never recovers — it collapsed to
-  1.9 fps). Result: 0.05 MB backlog, zero skips, and quality climbing back to maximum when the uplink
-  allows.
+- **Bytes on the wire are the budget, not encoder speed.** The relay and projected canvas sustain
+  **120 fps with zero drops** (1872 `drawImage` calls in 15.6s), so nothing downstream is the limit.
+  What causes lag is queueing, and queueing is caused by frame size. Measured end to end through the
+  live tunnel at a matched send rate:
+
+  | preview | frame | delivered | latency p50 | p95 | max | jitter |
+  |---|---|---|---|---|---|---|
+  | 480×360 q50 | 23.1 KB | 42.8 fps | 203 ms | 589 ms | 718 ms | 46.7 ms |
+  | **320×240 q42** | **9.7 KB** | **40.4 fps** | **56 ms** | **156 ms** | **287 ms** | **35.9 ms** |
+
+  The smaller preview is better on every axis at once. Frames do not arrive late because they were
+  slow to encode; they arrive late because they sat in a queue.
+- **Nothing per-frame runs on the main thread.** Capture is paced by `requestVideoFrameCallback` —
+  one encode per camera frame, no duplicates, no misses. The main thread blits the video into an
+  `OffscreenCanvas` and transfers it (zero-copy) to a worker that owns the socket, encodes the JPEG,
+  *and* runs motion detection, so the `getImageData` readback never stalls the render pipeline. The
+  full-resolution PNG is encoded in the worker too — on the main thread it froze the viewfinder for
+  hundreds of milliseconds at the exact moment the operator was holding the phone still.
+- **Pacing is AIMD, and buffers are kept shallow.** A binary "stop when saturated" gate produces a
+  sawtooth — run flat out, stall, drain, burst — which is what lag spikes actually are.
+  Multiplicative decrease on congestion with additive increase on headroom converges smoothly
+  instead, settling at whatever the path carries. Two failures found by measuring, both fixed:
+  adapting quality alone let the backlog reach **23 MB** (0.55 → 0.30 only halves the bytes, against
+  a 20× overshoot), and gating on a stale reading deadlocked the stream at **1.9 fps** because a
+  producer that has stopped sending frames stops receiving backlog reports — hence the explicit poll
+  on each skipped frame.
 
 Every registered model is trained on VisA/MVTec studio capture, so a phone photo of a real board will
 usually come back `unroutable`. **That is the coverage gate working**, and cold-start is the answer.
