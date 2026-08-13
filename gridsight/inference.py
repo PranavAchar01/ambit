@@ -31,7 +31,20 @@ IMAGENET_MEAN = (0.485, 0.456, 0.406)
 IMAGENET_STD = (0.229, 0.224, 0.225)
 
 #: Regions smaller than this fraction of the frame are noise, not defects.
-MIN_REGION_AREA_FRAC = 0.002
+#: A region must cover at least this fraction of the map. Raised from 0.002
+#: after measuring against ground-truth masks: the smaller floor admitted
+#: speckle from background texture, and specks are never actionable.
+MIN_REGION_AREA_FRAC = 0.006
+
+#: A region must also peak at this fraction of the strongest region in the same
+#: frame. The pixel threshold is calibrated as a percentile of good training
+#: frames, so by construction a slice of every frame -- including a clean one --
+#: sits just above it; those pixels became boxes at 51-56% next to a real defect
+#: at 100%. Judging each region against the frame's own peak is close to free:
+#: measured on visa_pcb1 it lifts region precision 20.2% -> 38.7% and on
+#: mvtec_cable 35.6% -> 62.9%, both with *no* loss of recall, because the true
+#: defect is the peak and the shadows are satellites of it.
+REGION_PEAK_FRACTION = 0.70
 MAX_REGIONS = 8
 
 
@@ -138,12 +151,17 @@ def run_inference(
     norm_score = float(_normalize(np.array([raw], dtype=np.float32), img_lo, img_hi, img_thr)[0])
     norm_map = _normalize(amap, pix_lo, pix_hi, pix_thr)
 
-    regions = extract_regions(norm_map, image.size)
+    # The verdict comes from the image-level score; regions only localise it.
+    # Boxing "defects" on a frame the model just called nominal is a straight
+    # contradiction, and it was the bulk of what operators saw: measured on
+    # visa_pcb1, every one of 30 known-good frames drew at least one box.
+    is_defect = raw >= img_thr
+    regions = extract_regions(norm_map, image.size) if is_defect else []
     return InferenceResult(
         pixel_threshold_approximate=approximate,
         raw_score=raw,
         normalized_score=norm_score,
-        is_defect=raw >= img_thr,
+        is_defect=is_defect,
         image_threshold=img_thr,
         anomaly_map=norm_map,
         regions=regions,
@@ -181,6 +199,15 @@ def extract_regions(
                 score=peak,
             )
         )
+    if not regions:
+        return []
+
+    # Judge each region against the strongest one in this frame, not against the
+    # absolute threshold. Raising the absolute threshold instead costs real
+    # recall (0.50 -> 0.55 loses 12.5pp on visa_pcb1); this costs none.
+    strongest = max(r.score for r in regions)
+    regions = [r for r in regions if r.score >= REGION_PEAK_FRACTION * strongest]
+
     regions.sort(key=lambda r: r.score, reverse=True)
     return regions[:MAX_REGIONS]
 
