@@ -166,4 +166,10 @@ export interface TrendsResponse {
     by_origin: { created_by: string; count: number; classes: string[] }[];
     total_inspections: number;
   };
+  backfill: {
+    count: number;
+    total: number;
+    fraction: number;
+    note: string;
+  };
 }

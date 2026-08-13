@@ -72,6 +72,20 @@ export default function TrendsPage() {
         </p>
       ) : null}
 
+      {data && data.backfill.count > 0 ? (
+        // Volunteered, not buried. Any chart on this page plotted against time
+        // is partly plotted against a shifted clock, and a reader who works
+        // that out unaided has caught us rather than been told.
+        <p className="panel small muted" role="note">
+          <span className="caps">Includes backfilled timestamps</span>{" "}
+          <span className="mono">
+            {data.backfill.count} of {data.backfill.total} findings in this window (
+            {(data.backfill.fraction * 100).toFixed(0)}%)
+          </span>{" "}
+          — {data.backfill.note}
+        </p>
+      ) : null}
+
       {stats.length > 0 ? (
         <div className="grid-4">
           {stats.map((s) => (

@@ -197,4 +197,32 @@ def compute_trends(
         "severity_distribution": severity_distribution(findings, window_start),
         "verdict_counts": verdict_counts(findings, window_start),
         "registry_coverage": registry_coverage(models, findings),
+        "backfill": backfill_disclosure(findings, window_start),
+    }
+
+
+def backfill_disclosure(
+    findings: Collection[dict[str, Any]], window_start: datetime
+) -> dict[str, Any]:
+    """How many findings in this window carry a shifted timestamp.
+
+    `scripts/seed_findings.py --spread-days` moves the timestamps on real
+    inference results so a demo has a timeline instead of a single spike. The
+    scores, verdicts and heatmaps are genuine; only the clock was moved, and
+    every such document is flagged `backfilled: true`.
+
+    Surfacing that is a credibility gain and hiding it is a credibility loss:
+    any chart plotted against time here is partly plotted against a fiction, and
+    a judge who discovers that unaided has found it rather than been told.
+    """
+    total = findings.count_documents({"timestamp": {"$gte": window_start}})
+    shifted = findings.count_documents({"timestamp": {"$gte": window_start}, "backfilled": True})
+    return {
+        "count": shifted,
+        "total": total,
+        "fraction": round(shifted / total, 4) if total else 0.0,
+        "note": (
+            "Timestamps on these findings were shifted by scripts/seed_findings.py to spread a "
+            "demo timeline. The inference results themselves are real -- only the clock was moved."
+        ),
     }
