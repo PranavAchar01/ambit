@@ -52,9 +52,12 @@ def main() -> int:
             return [float(x) for x in embedder.embed_one(im.convert("RGB"))]
 
     # ---- raw aggregation output, exactly as Atlas returns it ----------------
-    sample = probe_paths("insulator", 1)[0]
+    demo_class = next((c for c in sorted(registered) if probe_paths(c, 1)), None)
+    if demo_class is None:
+        raise SystemExit("no registered class has held-out test/good frames to probe with")
+    sample = probe_paths(demo_class, 1)[0]
     print("=" * 104)
-    print(f"$vectorSearch documents for a held-out insulator frame ({sample.name})")
+    print(f"$vectorSearch documents for a held-out {demo_class} frame ({sample.name})")
     print("=" * 104)
     for doc in vector_search(embed(sample), k=5):
         print(
