@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { VoiceDock } from "@/components/VoiceDock";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -12,7 +13,6 @@ const NAV: ReadonlyArray<{ href: string; label: string }> = [
   { href: "/", label: "Inspect" },
   { href: "/registry", label: "Registry" },
   { href: "/trends", label: "Trends" },
-  { href: "/voice", label: "Voice" },
 ];
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
@@ -43,6 +43,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
         <main id="main" className="shell main">
           {children}
         </main>
+
+        {/* Mounted in the layout, not in a route: this is the only point that
+            survives an App Router navigation, which is what lets a live WebRTC
+            session outlast moving between /, /registry and /trends. */}
+        <VoiceDock />
       </body>
     </html>
   );

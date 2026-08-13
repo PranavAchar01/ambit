@@ -791,6 +791,86 @@ tr[data-winner="true"] td {
   border-left: 2px solid var(--red-mid);
 }
 
+/* --- voice dock ----------------------------------------------------------- */
+
+/* Above the sticky masthead (40), below the skip link (100), which must stay
+   reachable by keyboard even with the panel open. */
+.dock {
+  position: fixed;
+  right: calc(var(--step) * 3);
+  bottom: calc(var(--step) * 3);
+  z-index: 50;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: calc(var(--step) * 1.5);
+}
+
+.dock-toggle {
+  width: 56px;
+  height: 56px;
+  flex: 0 0 auto;
+  background: var(--red);
+  color: #000;
+  border: 1px solid var(--red);
+  font-size: 20px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.dock-toggle:hover {
+  background: var(--fg);
+  border-color: var(--fg);
+}
+
+.dock-panel {
+  width: 380px;
+  max-width: calc(100vw - var(--step) * 6);
+  max-height: min(440px, calc(100vh - var(--step) * 16));
+  overflow-y: auto;
+  padding: calc(var(--step) * 2);
+  background: var(--surface);
+  border: 1px solid var(--line-bright);
+}
+
+.dock-panel[data-open="false"] {
+  display: none;
+}
+
+.dock-hd {
+  margin-bottom: calc(var(--step) * 1.5);
+}
+
+.dock-note {
+  margin: 0 0 calc(var(--step) * 2);
+}
+
+/* The console was built for a full-width page. In a 380px dock its two-column
+   split and its fixed scroll caps both have to give -- but the tool-call column
+   stays visible, because "every claim the analyst makes has to appear here
+   first" is the whole reason the panel is worth opening. */
+.dock-panel .grid-2 {
+  grid-template-columns: 1fr;
+}
+
+.dock-panel [style*="max-height"],
+.dock-panel ol,
+.dock-panel section {
+  max-height: none;
+}
+
+/* Keep the verdict card clear of the panel rather than trusting the operator to
+   scroll past it. */
+body[data-dock="open"] .main {
+  padding-bottom: calc(var(--step) * 60);
+}
+
+@media (max-width: 640px) {
+  .dock-panel {
+    width: calc(100vw - var(--step) * 6);
+  }
+}
+
 @keyframes blink {
   50% {
     opacity: 0.2;
