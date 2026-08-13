@@ -53,9 +53,71 @@ def _collect(module: AnomalyModule, images: list[Image.Image], image_size: int) 
     module.model.eval()
 
 
+#: Folds used to score each reference against a bank it was not fitted on.
+#: k folds cost k extra fits, so this trades cold-start latency for a threshold
+#: that means something. 3 is the smallest k that gives every reference an
+#: out-of-sample score without leaving a calibration fit below two images.
+CALIBRATION_FOLDS = 3
+
+#: A calibration fold must retain at least this many references to be worth
+#: fitting. Below it there is no out-of-sample estimate and the threshold falls
+#: back to the in-sample maximum -- loudly, because that boundary is not one.
+CALIBRATION_MIN_FIT = 2
+
+
 @torch.inference_mode()
-def _calibrate(module: AnomalyModule, images: list[Image.Image], image_size: int) -> dict[str, float]:
-    """Derive thresholds from the reference set's own score distribution."""
+def _score_images(module: AnomalyModule, images: list[Image.Image], image_size: int) -> list[float]:
+    scores: list[float] = []
+    for img in images:
+        out = module.model(to_tensor(img, image_size).to(inference_device()))
+        scores.append(float(out.pred_score.squeeze().item()))
+    return scores
+
+
+def _out_of_sample_scores(
+    images: list[Image.Image], cfg: PatchcoreConfig, folds: int = CALIBRATION_FOLDS
+) -> list[float]:
+    """Score every reference against a memory bank that does not contain it.
+
+    PatchCore stores patches and scores by nearest neighbour, so a frame that is
+    in the bank retrieves itself at near-zero distance. The maximum score over
+    the fitted references is therefore an in-sample statistic and not a decision
+    boundary for anything: measured on a 10-frame bench capture, every one of ten
+    genuinely normal frames scored above it once withheld (24.5-35.5 against an
+    in-sample maximum of 23.3).
+
+    This is the same correction the routing gate already carries -- its
+    percentile was moved off the training images for exactly this reason --
+    applied to the other threshold, which never received it.
+
+    Returns an empty list when the set is too small to hold anything out.
+    """
+    n = len(images)
+    k = min(folds, n)
+    if k < 2 or n - -(-n // k) < CALIBRATION_MIN_FIT:
+        return []
+
+    scores: list[float] = []
+    for f in range(k):
+        holdout = [i for i in range(n) if i % k == f]
+        fit = [i for i in range(n) if i % k != f]
+        if len(fit) < CALIBRATION_MIN_FIT or not holdout:
+            return []
+        module = build_patchcore(cfg)
+        module.to(inference_device())
+        _collect(module, [images[i] for i in fit], cfg.image_size)
+        scores.extend(_score_images(module, [images[i] for i in holdout], cfg.image_size))
+    return scores
+
+
+@torch.inference_mode()
+def _calibrate(
+    module: AnomalyModule,
+    images: list[Image.Image],
+    image_size: int,
+    out_of_sample: list[float] | None = None,
+) -> dict[str, float]:
+    """Derive thresholds from the reference set's score distribution."""
     scores: list[float] = []
     pixels: list[np.ndarray] = []
     for img in images:
@@ -67,19 +129,42 @@ def _calibrate(module: AnomalyModule, images: list[Image.Image], image_size: int
     flat = np.concatenate(pixels)
 
     # Every reference image is normal by construction, so the tightest honest
-    # decision boundary is the worst score the references produced.
-    image_threshold = float(arr.max())
+    # decision boundary is the worst score a known-good frame produced -- but it
+    # has to be a frame the bank was not fitted on, or the boundary is measured
+    # on the one population that cannot cross it.
+    in_sample_max = float(arr.max())
+    if out_of_sample:
+        oos = np.asarray(out_of_sample, dtype=np.float64)
+        image_threshold = float(oos.max())
+        image_max = max(in_sample_max, image_threshold)
+    else:
+        log.warning(
+            "too few references (%d) to hold any out -- image threshold falls back to the in-sample "
+            "maximum, which an unseen normal frame is expected to exceed. Treat nominal verdicts from "
+            "this model as unproven and add references.",
+            len(images),
+        )
+        image_threshold = in_sample_max
+        image_max = in_sample_max
+
     pixel_threshold = float(np.percentile(flat, PIXEL_THRESHOLD_PERCENTILE))
-    return {
+    stats = {
         "image_threshold": image_threshold,
         "pixel_threshold": pixel_threshold,
         "image_min": float(arr.min()),
-        "image_max": float(arr.max()),
+        "image_max": image_max,
         "pixel_min": float(flat.min()),
         "pixel_max": float(flat.max()),
         "reference_score_mean": float(arr.mean()),
         "reference_score_std": float(arr.std()),
+        "image_threshold_in_sample": in_sample_max,
+        "image_threshold_out_of_sample": float(len(out_of_sample or [])),
     }
+    if out_of_sample:
+        oos = np.asarray(out_of_sample, dtype=np.float64)
+        stats["out_of_sample_mean"] = float(oos.mean())
+        stats["out_of_sample_min"] = float(oos.min())
+    return stats
 
 
 @torch.inference_mode()
@@ -170,16 +255,19 @@ def fit_normal_only(
     if not images:
         raise ValueError("normal-only fit requires at least one training image")
 
+    out_of_sample = _out_of_sample_scores(images, cfg)
     module = build_patchcore(cfg)
     module.to(inference_device())
     _collect(module, images, cfg.image_size)
-    stats = _calibrate(module, images, cfg.image_size)
+    stats = _calibrate(module, images, cfg.image_size, out_of_sample)
     _apply_thresholds(module, stats)
     log.info(
-        "normal-only fit: %d frames, coreset=%.2f, image_threshold=%.4f (max over the references)",
+        "normal-only fit: %d frames, coreset=%.2f, image_threshold=%.4f (%s; in-sample max was %.4f)",
         len(images),
         cfg.coreset_sampling_ratio,
         stats["image_threshold"],
+        f"worst of {len(out_of_sample)} out-of-sample normals" if out_of_sample else "IN-SAMPLE ONLY",
+        stats["image_threshold_in_sample"],
     )
     return module, stats
 
@@ -216,28 +304,45 @@ def fit_fewshot(
         )
         module = build_patchcore(cfg)
 
+    # Calibrated before the final bank is built, and only for the coreset
+    # backbone: the PaDiM fallback fits a Gaussian rather than a patch bank, and
+    # at fewer than four references there is nothing to hold out anyway.
+    out_of_sample = _out_of_sample_scores(images, cfg) if kind == "patchcore" else []
+
     module.to(inference_device())
     _collect(module, images, image_size)
-    stats = _calibrate(module, images, image_size)
+    stats = _calibrate(module, images, image_size, out_of_sample)
     _apply_thresholds(module, stats)
 
     elapsed = time.time() - started
+    policy = (
+        (
+            f"image_threshold = worst score over {len(out_of_sample)} references scored against a "
+            f"bank fitted without them ({CALIBRATION_FOLDS}-fold); the in-sample maximum was "
+            f"{stats['image_threshold_in_sample']:.4f} and is not a boundary, because PatchCore "
+            "retrieves a fitted frame at near-zero distance"
+        )
+        if out_of_sample
+        else (
+            f"image_threshold = max score over the {len(images)} reference images IN SAMPLE -- too "
+            "few references to hold any out. An unseen normal frame is expected to exceed it"
+        )
+    )
     info: dict[str, Any] = {
         "backbone": kind,
         "reference_images": len(images),
         "seconds": round(elapsed, 2),
         "threshold_policy": (
-            f"image_threshold = max score over the {len(images)} reference images "
-            f"(normal envelope); pixel_threshold = p{PIXEL_THRESHOLD_PERCENTILE} of reference "
-            "anomaly-map values"
+            f"{policy}; pixel_threshold = p{PIXEL_THRESHOLD_PERCENTILE} of reference anomaly-map values"
         ),
         **{k: round(v, 6) for k, v in stats.items()},
     }
     log.info(
-        "cold start fitted in %.1fs (%s, threshold=%.4f over %d refs)",
+        "cold start fitted in %.1fs (%s, threshold=%.4f over %d refs, %d out-of-sample)",
         elapsed,
         kind,
         stats["image_threshold"],
         len(images),
+        len(out_of_sample),
     )
     return module, cfg, info
