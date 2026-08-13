@@ -40,6 +40,7 @@ from gridsight.train.fewshot import (
     PIXEL_THRESHOLD_PERCENTILE,
     apply_pixel_stats,
     calibrate_pixel_stats,
+    fit_normal_only,
 )
 from gridsight.train.store import (
     AnomalyModule,
@@ -90,10 +91,23 @@ def mask_dir(asset_class: str) -> Path | None:
     return d if d.is_dir() and any(d.glob("*.png")) else None
 
 
+def has_defect_set(asset_class: str) -> bool:
+    """Whether this class ships any labelled defect frames at all.
+
+    A class captured from a prototype shop's own bench has none, and that is the
+    normal state of the beachhead ICP rather than a gap in the ingest. It changes
+    two things downstream and nothing else: anomalib cannot be handed an empty
+    `abnormal_dir` (it raises), and no image AUROC is computable from one class.
+    """
+    return bool(list_images(class_dir(asset_class) / "test" / "defect"))
+
+
 def fit_class(asset_class: str, cfg: PatchcoreConfig) -> tuple[AnomalyModule, dict[str, float | None]]:
     """Fit PatchCore on train/good and evaluate on the held-out test split."""
     root = class_dir(asset_class)
     masks = mask_dir(asset_class)
+    if not has_defect_set(asset_class):
+        return _fit_normal_only_class(asset_class, cfg)
     datamodule = Folder(
         name=asset_class,
         root=root,
@@ -163,6 +177,36 @@ def fit_class(asset_class: str, cfg: PatchcoreConfig) -> tuple[AnomalyModule, di
         len(train_images),
     )
     return module, metrics
+
+
+def _fit_normal_only_class(
+    asset_class: str, cfg: PatchcoreConfig
+) -> tuple[AnomalyModule, dict[str, float | None]]:
+    """Fit a class that ships no labelled defects, and record no metrics from one.
+
+    Both AUROCs stay null. With a single label present torchmetrics returns 0.0
+    for a binary AUROC and warns rather than raising, so computing one here would
+    write a fabricated measurement into the registry that the UI would render as
+    real. Null is the true value: a prototype shop has no defect set, and the
+    absence is the ICP argument rather than a gap to be papered over.
+    """
+    paths = list_images(class_dir(asset_class) / "train" / "good")
+    images = [Image.open(p).convert("RGB") for p in paths]
+    try:
+        module, stats = fit_normal_only(images, cfg)
+    finally:
+        for img in images:
+            img.close()
+    log.info(
+        "[%s] normal-only class: %d good frames, image_threshold=%.4f, pixel_threshold=%.4f (p%.1f); "
+        "image_auroc and pixel_auroc recorded as null -- no defect set exists to measure either",
+        asset_class,
+        len(paths),
+        stats["image_threshold"],
+        stats["pixel_threshold"],
+        PIXEL_THRESHOLD_PERCENTILE,
+    )
+    return module, {"image_auroc": None, "pixel_auroc": None}
 
 
 #: A model's routing gate is the Nth percentile of *held-out* normal frames'

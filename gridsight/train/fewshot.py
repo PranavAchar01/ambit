@@ -83,6 +83,23 @@ def _calibrate(module: AnomalyModule, images: list[Image.Image], image_size: int
 
 
 @torch.inference_mode()
+def calibrate_reference_stats(
+    module: AnomalyModule, images: list[Image.Image], image_size: int
+) -> dict[str, float]:
+    """Public entry point for the normal-envelope threshold policy.
+
+    Cold-start is not the only path with no labelled defects: a class captured
+    from a prototype shop's own bench has none either, and anomalib's adaptive
+    image threshold needs both classes present to mean anything. Both cases want
+    the identical policy -- the boundary is the worst score a known-good frame
+    produced -- so both call the same code rather than growing two definitions of
+    "normal envelope" that could drift apart.
+    """
+    module.model.eval()
+    return _calibrate(module, images, image_size)
+
+
+@torch.inference_mode()
 def calibrate_pixel_stats(
     module: AnomalyModule, images: list[Image.Image], image_size: int
 ) -> dict[str, float]:
@@ -133,6 +150,47 @@ def _apply_thresholds(module: AnomalyModule, stats: dict[str, float]) -> None:
     for buf_name, stat_name in mapping.items():
         sd[buf_name] = torch.tensor(stats[stat_name], dtype=sd[buf_name].dtype)
     post_processor(module).load_state_dict(sd)
+
+
+def fit_normal_only(
+    images: list[Image.Image], cfg: PatchcoreConfig
+) -> tuple[AnomalyModule, dict[str, float]]:
+    """Fit a PatchCore specialist on normals alone, with no labelled split.
+
+    Cold-start already does this for images handed over at request time. A class
+    ingested from a bench capture needs the identical thing at seed time: there
+    is no defect set, so anomalib's Engine has nothing to validate or test
+    against -- it raises on an empty `abnormal_dir`, and Lightning still demands
+    a validation dataloader if the split is switched off. Rather than feed it a
+    one-class split whose metrics would be meaningless, the normal-only path
+    reuses the collection and calibration routines this module already owns.
+
+    Returns the fitted module and the calibration it was given.
+    """
+    if not images:
+        raise ValueError("normal-only fit requires at least one training image")
+
+    module = build_patchcore(cfg)
+    module.to(inference_device())
+    _collect(module, images, cfg.image_size)
+    stats = _calibrate(module, images, cfg.image_size)
+    _apply_thresholds(module, stats)
+    log.info(
+        "normal-only fit: %d frames, coreset=%.2f, image_threshold=%.4f (max over the references)",
+        len(images),
+        cfg.coreset_sampling_ratio,
+        stats["image_threshold"],
+    )
+    return module, stats
+
+
+def apply_reference_stats(module: AnomalyModule, stats: dict[str, float]) -> None:
+    """Write a normal-envelope calibration into the post-processor buffers.
+
+    The public counterpart to `calibrate_reference_stats`, for callers outside
+    the cold-start path that also have no labelled defects.
+    """
+    _apply_thresholds(module, stats)
 
 
 def fit_fewshot(
