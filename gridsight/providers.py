@@ -18,6 +18,7 @@ from __future__ import annotations
 from typing import Any
 
 from gridsight.agent.llm import resolve_llm
+from gridsight.audio.tts import tts_report
 from gridsight.vision.vlm import get_provider
 
 
@@ -42,4 +43,5 @@ def provider_report() -> dict[str, Any]:
             # refuse. The system stays up and stays honest on zero credentials.
             "available": llm.available,
         },
+        "tts": tts_report(),
     }

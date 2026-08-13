@@ -89,3 +89,32 @@ export async function coldStart(
   if (!res.ok) throw new Error(`Cold start failed (${res.status}): ${await res.text()}`);
   return (await res.json()) as InspectResult;
 }
+
+export interface HealthProviders {
+  vlm: { name: string; reason: string; describes_pixels: boolean };
+  llm: { name: string; reason: string; model: string | null; available: boolean };
+  tts: { name: string; reason: string; available: boolean; model: string | null };
+}
+
+export function fetchProviders(): Promise<{ providers: HealthProviders }> {
+  return getJson<{ providers: HealthProviders }>("/health");
+}
+
+/**
+ * Synthesise a finding server-side. Resolves to null when speech is
+ * unavailable or failed -- never to silence dressed as success, so the caller
+ * can disable its control and say why instead of playing nothing.
+ */
+export async function speak(text: string): Promise<Blob | null> {
+  try {
+    const res = await fetch(`${API_BASE}/speak`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text }),
+    });
+    if (!res.ok) return null;
+    return await res.blob();
+  } catch {
+    return null;
+  }
+}

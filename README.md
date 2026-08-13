@@ -46,7 +46,7 @@ event started, at commit `6903de1`.
 | **Main screen restructured** into capture / analysis columns; agent steps as discrete rows with per-step latency; verdict card rendering score-vs-gate as a comparison | **Built during event** |
 | **Manual shutter and stability-detection toggle** on the phone capture page | **Built during event** |
 | **Backfilled-timestamp disclosure** surfaced in `/trends` | **Built during event** |
-| ElevenLabs spoken findings | **Not built** — see *Not done* |
+| **ElevenLabs spoken findings** — server-side synthesis, default-muted control, keyless path verified | **Built during event** |
 | Projects / tenant grouping, registry and trends redesign | **Not built** — see *Not done* |
 
 Nothing in the "Pre-existing" rows was re-presented as new, and nothing in the "Built during event"
@@ -56,7 +56,8 @@ rows existed before it. The git history is the audit trail: every event commit i
 
 ## The result that matters
 
-Five specialists are registered. A sixth board, `visa_pcb4`, is deliberately withheld — the registry
+Five corpus specialists are registered, plus `arduino_uno` from our own photography. A further
+board, `visa_pcb4`, is deliberately withheld — the registry
 has never seen it. Measured over 125 in-registry and 25 out-of-registry held-out frames:
 
 | decision rule | in-registry accepted | out-of-registry refused |
@@ -103,7 +104,7 @@ There *is* an offline fallback — if the index is missing, `PENDING`, or the ag
 `ATLAS VECTOR SEARCH UNAVAILABLE … DEGRADING TO BRUTE-FORCE COSINE` at ERROR on every call, and
 `/health` reports index status, because a silent fallback makes a broken deployment look healthy.
 
-Atlas usage: **62 MB / 512 MB** (12.1%) on an M0.
+Atlas usage: **201 MB / 512 MB** (39%) on an M0, with six specialists registered.
 
 ---
 
@@ -365,7 +366,16 @@ demo. With **neither** key present the band resolves by the deterministic rule: 
 the correct default for a system whose whole claim is that it declines when it does not know, and it
 means the demo runs on zero credentials.
 
-**ElevenLabs — speaking the finding.** Not built; see *Not done*.
+**ElevenLabs — speaking the finding.** When a frame resolves to `defect` the narrative is spoken
+aloud without anyone asking, because the moment a defect is found is the moment nobody is looking at
+the screen. Synthesis is server-side and the bytes are streamed to the client, so the key never
+reaches the browser -- the same reasoning that makes the Realtime path mint an ephemeral credential.
+The control is **muted by default**: a laptop that announces every test frame during setup is a
+liability, and one click before going on stage turns it on. Failure is silent by contract; the
+verdict is the product and the audio is a courtesy, so it can never block or delay one.
+
+Absent `ELEVENLABS_API_KEY`, `POST /speak` returns 503 with the reason, the narrative renders as
+text, and the control is disabled with a *"voice unavailable"* tooltip. No stub audio.
 
 ### Narration is written once and stored, not re-inferred
 
@@ -412,8 +422,10 @@ that re-infers on every question does not have a memory; it has a habit.
 
 Stated plainly rather than left for a reader to notice:
 
-- **ElevenLabs spoken findings.** Not built. No `ELEVENLABS_API_KEY` was available and the work was
-  cut for time. The existing OpenAI Realtime voice agent is untouched and still works.
+- **ElevenLabs spoken findings are built but unexercised.** No `ELEVENLABS_API_KEY` was available, so
+  only the keyless path has been run end to end: 503 with a reason, text narrative, disabled control,
+  no stub audio. The synthesis call itself has never reached ElevenLabs. The existing OpenAI Realtime
+  voice agent is untouched and still works.
 - **Projects / tenant grouping.** The registry is still a flat list of classes rather than being
   grouped under an owning project.
 - **`/registry` and `/trends` redesign.** Both still render their original layout. The backfill

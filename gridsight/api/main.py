@@ -28,6 +28,7 @@ from starlette.websockets import WebSocketDisconnect
 from gridsight.agent.graph import build_graph, get_app, make_saver, store_pil
 from gridsight.analytics import compute_trends
 from gridsight.api.relay import relay
+from gridsight.audio.tts import resolve_tts, synthesize
 from gridsight.config import get_settings
 from gridsight.db.mongo import (
     datasets_col,
@@ -323,6 +324,22 @@ async def coldstart(
         payload["routed_model"]["name"],
     )
     return JSONResponse(payload)
+
+
+@app.post("/speak")
+async def speak(payload: dict[str, Any]) -> Response:
+    """Synthesise a finding aloud. The provider key never reaches the browser.
+
+    503 when speech is unavailable, so the client disables its control and says
+    why rather than playing stub audio or failing silently.
+    """
+    text = str(payload.get("text") or "").strip()
+    if not text:
+        raise HTTPException(400, "text is required")
+    audio = synthesize(text)
+    if audio is None:
+        raise HTTPException(503, resolve_tts().reason)
+    return Response(content=audio, media_type="audio/mpeg", headers={"Cache-Control": "no-store"})
 
 
 @app.get("/models")
