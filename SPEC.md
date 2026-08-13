@@ -374,6 +374,10 @@ A 360 scan requires per-view models or pose normalisation and will consume the b
 
 > A two-sided board becomes two canonical views, each its own registry entry; the router selects which side it is looking at.
 
+This is not speculation: `visa_pcb1` and `visa_pcb2` are the front and back of the same HC-SR04 board,
+they are the second-closest centroid pair in the registry (0.8797), and the router still routes them
+correctly 25/25 (§8.1).
+
 ### 6.6.5 Second-half framing — generality without the powerline story
 
 The powerline corpus is **purged and must not appear in the pitch** (§0.7). Generality is now argued from the architecture and from the licence split, in one sentence:
@@ -472,6 +476,30 @@ competence over *that particular board*. That is precisely the Rev C scenario fr
 
 Cost of that refusal, stated honestly: 6 of 125 in-registry frames are also refused (119/125
 accepted). At prototype volume, re-shooting six frames is cheaper than passing one uninspected board.
+
+**The refusal is a near miss, and the LLM adjudication path fires for real.** `visa_pcb4` scores
+0.9428 against `visa_pcb3` — close enough to land inside the 0.04 ambiguous band below that model's
+gate, so the agent escalates to OpenAI with the top-5 candidate metadata and **OpenAI adjudicates the
+refusal**. The trace reads *"Ambiguous at 0.9428; openai refused to route"*. This is materially
+better demo material than an obvious mismatch: the system is not rejecting something that looks
+nothing like a PCB, it is rejecting a board that looks *almost exactly* like one it already knows.
+
+**Inter-model centroid similarity** (Atlas-equivalent `(1+cos)/2`; minimum gate in the registry is 0.9629):
+
+| | cable | transistor | pcb1 | pcb2 | pcb3 |
+|---|---|---|---|---|---|
+| **mvtec_cable** | 1.0000 | 0.7281 | 0.6711 | 0.6723 | 0.6494 |
+| **mvtec_transistor** | 0.7281 | 1.0000 | 0.7289 | 0.7716 | 0.7547 |
+| **visa_pcb1** | 0.6711 | 0.7289 | 1.0000 | 0.8797 | 0.8626 |
+| **visa_pcb2** | 0.6723 | 0.7716 | 0.8797 | 1.0000 | 0.9077 |
+| **visa_pcb3** | 0.6494 | 0.7547 | 0.8626 | 0.9077 | 1.0000 |
+
+Every off-diagonal sits below every gate, so cross-class traffic is not merely unlikely — it is
+inadmissible.
+
+**`pcb1` and `pcb2` are the two faces of the same HC-SR04 board**, confirmed by rendering samples
+rather than by reading category names. They are the second-closest pair in the registry at 0.8797 and
+the router still separates them 25/25.
 
 ### 8.2 Prior evidence — the powerline + MVTec registry (superseded, historical)
 
