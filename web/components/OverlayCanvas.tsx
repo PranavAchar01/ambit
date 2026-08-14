@@ -11,10 +11,19 @@ interface Props {
   heatOpacity?: number;
 }
 
+/**
+ * Deliberately no `crossOrigin`. Nothing here ever reads the canvas back --
+ * no getImageData, no toDataURL -- so tainting costs nothing, while requesting
+ * the image in CORS mode costs a whole failure path: /image responses are
+ * `public, max-age=31536000`, and the plain response carries no `Vary`, so one
+ * ordinary <img> load caches an entry with no Access-Control-Allow-Origin. The
+ * next CORS-mode request reuses that entry, finds no ACAO header, and fails --
+ * which showed up as an inspected frame that would not render while the golden
+ * reference beside it, loaded plainly, did.
+ */
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const img = new Image();
-    img.crossOrigin = "anonymous";
     img.onload = () => resolve(img);
     img.onerror = () => reject(new Error(`could not load ${src}`));
     img.src = src;
