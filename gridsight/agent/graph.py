@@ -55,7 +55,14 @@ MAX_CANDIDATES = 5
 
 #: How far below a model's own gate a frame may score and still be worth asking
 #: the LLM about. Inside this band the vector score alone is not decisive.
-AMBIGUOUS_MARGIN = 0.04
+#: How far below its gate a frame may sit and still be escalated to the LLM
+#: rather than refused outright. Narrowed from 0.04 after the gates were
+#: recalibrated to true in-class coverage: at 0.04 the withheld visa_pcb4 landed
+#: inside the band against visa_pcb3 and OpenAI routed it, which is the one
+#: outcome this system exists to avoid. Its closest approach is 0.0362 below,
+#: so 0.02 puts it back in hard-refusal territory while leaving genuine
+#: near-misses -- the frames actually worth a second opinion -- escalated.
+AMBIGUOUS_MARGIN = 0.02
 
 
 class AgentState(TypedDict, total=False):
@@ -466,7 +473,9 @@ def narrate(state: AgentState) -> dict[str, Any]:
         "threshold": (
             state.get("image_threshold")
             if verdict != "unroutable"
-            else float(candidates[0]["gate"]) if candidates else settings.route_threshold
+            else float(candidates[0]["gate"])
+            if candidates
+            else settings.route_threshold
         ),
         "severity": state.get("severity", 0.0),
         "regions": state.get("bbox_regions", []),
