@@ -54,7 +54,15 @@ SATURATION_FRACTION = 0.5
 #: The percentile of the frame's own raw map used to localise once that happens.
 #: Measured on the saturated arduino_uno frame: p97 boxed 2.7% of the frame and
 #: p99 boxed 1.4%, both centred on the real defect, while p99.5 found nothing.
-LOCALISE_PERCENTILE = 99.0
+LOCALISE_PERCENTILE = 97.0
+
+#: Area floor on the saturated path. MIN_REGION_AREA_FRAC was measured against
+#: VisA and MVTec, where a defect fills a good part of the frame. Percentile
+#: rescaling produces smaller, sharper blobs, and at 0.006 it discarded a real
+#: one: the plastic on the arduino's ISCP header came back at peak 0.94 covering
+#: 0.287% of the map and was dropped for being small, leaving only a brighter
+#: artifact on the paper behind it.
+SATURATED_MIN_AREA_FRAC = 0.0025
 MAX_REGIONS = 8
 
 
@@ -160,6 +168,7 @@ def run_inference(
 
     norm_score = float(_normalize(np.array([raw], dtype=np.float32), img_lo, img_hi, img_thr)[0])
     norm_map = _normalize(amap, pix_lo, pix_hi, pix_thr)
+    area_floor = MIN_REGION_AREA_FRAC
 
     # A model fitted on a handful of near-identical frames calibrates pixel_min/
     # pixel_max over a very narrow range. A new pose then lands entirely above
@@ -175,6 +184,7 @@ def run_inference(
         span = max(1e-6, float(amap.max()) - floor)
         norm_map = np.clip((amap - floor) / span * 0.5 + 0.5, 0.0, 1.0)
         approximate = True
+        area_floor = SATURATED_MIN_AREA_FRAC
         log.warning(
             "normalised map saturated (raw %.1f-%.1f vs calibrated max %.1f); "
             "localising from this frame's own p%.1f instead",
@@ -189,7 +199,9 @@ def run_inference(
     # contradiction, and it was the bulk of what operators saw: measured on
     # visa_pcb1, every one of 30 known-good frames drew at least one box.
     is_defect = raw >= img_thr
-    regions = extract_regions(norm_map, image.size) if is_defect else []
+    regions = (
+        extract_regions(norm_map, image.size, min_area_frac=area_floor) if is_defect else []
+    )
     return InferenceResult(
         pixel_threshold_approximate=approximate,
         raw_score=raw,
@@ -202,7 +214,10 @@ def run_inference(
 
 
 def extract_regions(
-    norm_map: np.ndarray, target_size: tuple[int, int], threshold: float = 0.5
+    norm_map: np.ndarray,
+    target_size: tuple[int, int],
+    threshold: float = 0.5,
+    min_area_frac: float = MIN_REGION_AREA_FRAC,
 ) -> list[BBoxRegion]:
     """Threshold the normalised heatmap and derive boxes via connected components."""
     h_map, w_map = norm_map.shape
@@ -215,7 +230,7 @@ def extract_regions(
 
     tw, th = target_size
     sx, sy = tw / w_map, th / h_map
-    min_area = MIN_REGION_AREA_FRAC * w_map * h_map
+    min_area = min_area_frac * w_map * h_map
 
     regions: list[BBoxRegion] = []
     for i in range(1, count):
