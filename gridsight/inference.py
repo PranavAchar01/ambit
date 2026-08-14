@@ -45,6 +45,16 @@ MIN_REGION_AREA_FRAC = 0.006
 #: mvtec_cable 35.6% -> 62.9%, both with *no* loss of recall, because the true
 #: defect is the peak and the shadows are satellites of it.
 REGION_PEAK_FRACTION = 0.70
+
+#: If this much of the normalised map has clipped to 1.0, the model's calibrated
+#: pixel range says nothing about this frame and localising from it would box the
+#: entire board.
+SATURATION_FRACTION = 0.5
+
+#: The percentile of the frame's own raw map used to localise once that happens.
+#: Measured on the saturated arduino_uno frame: p97 boxed 2.7% of the frame and
+#: p99 boxed 1.4%, both centred on the real defect, while p99.5 found nothing.
+LOCALISE_PERCENTILE = 99.0
 MAX_REGIONS = 8
 
 
@@ -150,6 +160,29 @@ def run_inference(
 
     norm_score = float(_normalize(np.array([raw], dtype=np.float32), img_lo, img_hi, img_thr)[0])
     norm_map = _normalize(amap, pix_lo, pix_hi, pix_thr)
+
+    # A model fitted on a handful of near-identical frames calibrates pixel_min/
+    # pixel_max over a very narrow range. A new pose then lands entirely above
+    # pixel_max, normalisation clips every pixel to 1.0, and the "defect region"
+    # becomes the whole board -- measured on a 10-frame arduino_uno model, the
+    # raw map ran 25.4-60.2 against a calibrated pixel_max of 20.7, so 100% of
+    # the frame clipped. The structure is still in the raw map; only the scale
+    # is useless. Fall back to the frame's own distribution to localise, which
+    # is the same policy _resolve_pixel_threshold already applies to a
+    # non-finite threshold.
+    if float((norm_map >= 0.999).mean()) >= SATURATION_FRACTION:
+        floor = float(np.percentile(amap, LOCALISE_PERCENTILE))
+        span = max(1e-6, float(amap.max()) - floor)
+        norm_map = np.clip((amap - floor) / span * 0.5 + 0.5, 0.0, 1.0)
+        approximate = True
+        log.warning(
+            "normalised map saturated (raw %.1f-%.1f vs calibrated max %.1f); "
+            "localising from this frame's own p%.1f instead",
+            float(amap.min()),
+            float(amap.max()),
+            pix_hi,
+            LOCALISE_PERCENTILE,
+        )
 
     # The verdict comes from the image-level score; regions only localise it.
     # Boxing "defects" on a frame the model just called nominal is a straight
